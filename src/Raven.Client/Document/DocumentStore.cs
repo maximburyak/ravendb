@@ -236,7 +236,7 @@ namespace Raven.Client.Document
             Task.WaitAll(tasks.ToArray(), TimeSpan.FromSeconds(3));
             // if this is still going, we continue with disposal, it is for graceful shutdown only, anyway
 
-            Subscriptions?.Dispose();
+            //Subscriptions?.Dispose();
 
             WasDisposed = true;
             AfterDispose?.Invoke(this, EventArgs.Empty);

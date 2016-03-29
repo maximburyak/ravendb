@@ -17,9 +17,9 @@ namespace Raven.Abstractions.Data
         {
             ConnectionId = Interlocked.Increment(ref connectionCounter) + "/" + Base62Util.Base62Random();
             BatchOptions = new SubscriptionBatchOptions();
-            ClientAliveNotificationInterval = TimeSpan.FromMinutes(2);
-            TimeToWaitBeforeConnectionRetry = TimeSpan.FromSeconds(15);
-            PullingRequestTimeout = TimeSpan.FromMinutes(5);
+            ClientAliveNotificationInterval = TimeSpan.FromMinutes(2).Ticks;
+            TimeToWaitBeforeConnectionRetry = TimeSpan.FromSeconds(15).Ticks;
+            PullingRequestTimeout = TimeSpan.FromMinutes(5).Ticks;
             Strategy = SubscriptionOpeningStrategy.OpenIfFree;
         }
 
@@ -27,11 +27,11 @@ namespace Raven.Abstractions.Data
 
         public SubscriptionBatchOptions BatchOptions { get; set; }
 
-        public TimeSpan TimeToWaitBeforeConnectionRetry { get; set; }
+        public long TimeToWaitBeforeConnectionRetry { get; set; }
 
-        public TimeSpan ClientAliveNotificationInterval { get; set; }
+        public long ClientAliveNotificationInterval { get; set; }
 
-        public TimeSpan PullingRequestTimeout { get; set; }
+        public long PullingRequestTimeout { get; set; }
 
         public bool IgnoreSubscribersErrors { get; set; }
 
@@ -43,13 +43,13 @@ namespace Raven.Abstractions.Data
         public SubscriptionBatchOptions()
         {
             MaxDocCount = 4096;
-            AcknowledgmentTimeout = TimeSpan.FromMinutes(1);
+            AcknowledgmentTimeout = TimeSpan.FromMinutes(1).Ticks;
         }
 
         public int? MaxSize { get; set; }
 
         public int MaxDocCount { get; set; }
 
-        public TimeSpan AcknowledgmentTimeout { get; set; }
+        public long AcknowledgmentTimeout { get; set; }
     }
 }

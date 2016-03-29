@@ -194,7 +194,7 @@ namespace Raven.Client
         long? GetLastWrittenEtag();
 
         BulkInsertOperation BulkInsert(string database = null);
-
+/*
         /// <summary>
         /// Provides methods to manage data subscriptions in async manner.
         /// </summary>
@@ -203,7 +203,7 @@ namespace Raven.Client
         /// <summary>
         /// Provides methods to manage data subscriptions.
         /// </summary>
-        IReliableSubscriptions Subscriptions { get; }
+        IReliableSubscriptions Subscriptions { get; }*/
 
         DocumentSessionListeners Listeners { get; }
 

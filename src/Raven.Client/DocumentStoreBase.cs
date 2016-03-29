@@ -30,8 +30,8 @@ namespace Raven.Client
             InitializeEncryptor();
 
             LastEtagHolder = new GlobalLastEtagHolder();
-            AsyncSubscriptions = new AsyncDocumentSubscriptions(this);
-            Subscriptions = new DocumentSubscriptions(this);
+           /* AsyncSubscriptions = new AsyncDocumentSubscriptions(this);
+            Subscriptions = new DocumentSubscriptions(this);*/
         }
 
         public DocumentSessionListeners Listeners
@@ -232,8 +232,8 @@ namespace Raven.Client
 
         public abstract BulkInsertOperation BulkInsert(string database = null);
 
-        public IAsyncReliableSubscriptions AsyncSubscriptions { get; private set; }
-        public IReliableSubscriptions Subscriptions { get; private set; }
+        /*public IAsyncReliableSubscriptions AsyncSubscriptions { get; private set; }
+        public IReliableSubscriptions Subscriptions { get; private set; }*/
 
         protected void EnsureNotClosed()
         {

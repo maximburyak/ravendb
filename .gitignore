@@ -91,3 +91,17 @@ src/Raven.Studio/typings/**/*.d.ts
 /src/Raven.Studio/wwwroot/Content/**/*.css
 /src/Raven.Studio/wwwroot/lib
 test/FastTests/Databases/
+/src/Raven.Studio/typescript/commands/**/*.js
+/src/Raven.Studio/typescript/commands/**/*.map
+/src/Raven.Studio/typescript/common/**/*.js
+/src/Raven.Studio/typescript/common/**/*.map
+/src/Raven.Studio/typescript/models/**/*.js
+/src/Raven.Studio/typescript/models/**/*.map
+/src/Raven.Studio/typescript/viewmodels/**/*.js
+/src/Raven.Studio/typescript/viewmodels/**/*.map
+/src/Raven.Studio/typescript/main.js
+/src/Raven.Studio/typescript/main.js.map
+/src/Raven.Studio/typescript/transitions/**/*.js
+/src/Raven.Studio/typescript/transitions/**/*.map
+/src/Raven.Studio/typescript/widgets/**/*.js
+/src/Raven.Studio/typescript/widgets/**/*.map

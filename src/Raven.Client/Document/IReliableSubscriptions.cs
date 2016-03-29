@@ -1,3 +1,4 @@
+/*
 using System;
 using System.Collections.Generic;
 using Raven.Abstractions.Data;
@@ -54,3 +55,4 @@ namespace Raven.Client.Document
         void Release(long id, string database = null);
     }
 }
+*/
