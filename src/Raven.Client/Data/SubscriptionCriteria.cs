@@ -18,4 +18,12 @@ namespace Raven.Abstractions.Data
         public string Collection { get; set; }
         public string FilterJavaScript { get; set; }
     }
+
+    public class SubscriptionCriteria<T>
+    {
+        public string KeyStartsWith { get; set; } // todo: maybe remove that
+        public long? StartEtag { get; set; }
+        public string Collection { get; set; }
+        public string FilterJavaScript { get; set; }
+    }
 }

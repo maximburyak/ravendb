@@ -35,11 +35,6 @@ namespace Raven.Server.Documents
                 connection.Value.SendDocumentChanges(documentChangeNotification);
         }
 
-        public void RaiseNotifications(DataSubscriptionChangeNotification subscriptionChangeNotification)
-        {
-            // tood: Implement subscriptions notifications if needed..
-        }
-
         public void Connect(NotificationsClientConnection connection)
         {
             Connections.TryAdd(connection.Id, connection);

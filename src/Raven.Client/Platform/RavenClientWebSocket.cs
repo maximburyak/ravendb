@@ -16,7 +16,7 @@ namespace Raven.Client.Platform
             if (Sparrow.Platform.Platform.RunningOnPosix)
                 unixInstance = new RavenUnixClientWebSocket();
             else
-                winInstance = new ClientWebSocket();
+                winInstance = new ClientWebSocket();                        
         }
 
         public WebSocketState State

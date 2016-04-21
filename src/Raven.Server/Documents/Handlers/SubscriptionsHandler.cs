@@ -7,28 +7,36 @@ using Raven.Abstractions.Data;
 using Raven.Abstractions.Exceptions.Subscriptions;
 using Raven.Abstractions.Logging;
 using Raven.Server.Json;
-using Raven.Server.Json.Parsing;
 using Raven.Server.Routing;
 using Raven.Server.ServerWide.Context;
 using Voron.Data.Tables;
+using Sparrow.Json.Parsing;
+using Sparrow.Json;
+using System.Net.WebSockets;
+using System.Diagnostics;
+using System.Threading;
+using System.IO;
+using System.Net.Http.Headers;
+using Raven.Database.Extensions;
+using Sparrow;
+using Sparrow.Binary;
+
 
 namespace Raven.Server.Documents.Handlers
 {
     public class SubscriptionsHandler : DatabaseRequestHandler
     {
-        private static readonly ILog log = LogManager.GetLogger(typeof (SubscriptionsHandler));
-        
-        [RavenAction("/databases/*/subscription/create", "GET", "/databases/{databaseName:string}/subscription/create")]
+
+        private static readonly ILog log = LogManager.GetLogger(typeof(SubscriptionsHandler));
+
+        [RavenAction("/databases/*/subscriptions/create", "POST", "/databases/{databaseName:string}/subscriptions/create")]
         public async Task Create()
         {
             DocumentsOperationContext context;
-            long subscriptionId = 0;
             using (ContextPool.AllocateOperationContext(out context))
             {
                 var subscriptionCriteriaRaw = await context.ReadForDiskAsync(RequestBodyStream(), null);
-                context.OpenWriteTransaction();
-                subscriptionId = Database.SubscriptionStorage.CreateSubscription(subscriptionCriteriaRaw);
-                context.Transaction.Commit();
+                var subscriptionId = Database.SubscriptionStorage.CreateSubscription(subscriptionCriteriaRaw);
                 var ack = new DynamicJsonValue
                 {
                     ["Id"] = subscriptionId
@@ -37,14 +45,13 @@ namespace Raven.Server.Documents.Handlers
                 {
                     context.Write(writer, ack);
                 }
-                
+
                 HttpContext.Response.StatusCode = 201; // NoContent
-                
             }
         }
 
-        [RavenAction("/databases/*/subscription", "DELETE",
-            "/databases/{databaseName:string}/subscription?id={subscriptionId:long}")]
+        [RavenAction("/databases/*/subscriptions", "DELETE",
+            "/databases/{databaseName:string}/subscriptions?id={subscriptionId:long}")]
         public Task Delete()
         {
             var ids = HttpContext.Request.Query["id"];
@@ -55,21 +62,16 @@ namespace Raven.Server.Documents.Handlers
             if (long.TryParse(ids[0], out id) == false)
                 throw new ArgumentException("The 'id' query string parameter must be a valid long");
 
-            DocumentsOperationContext context;
-            using (ContextPool.AllocateOperationContext(out context))
-            {
-                context.OpenWriteTransaction();
-                Database.SubscriptionStorage.DeleteSubscription(id);
-                context.Transaction.Commit();
-            }
+
+            Database.SubscriptionStorage.DeleteSubscription(id);
 
             HttpContext.Response.StatusCode = 204; // NoContent
 
             return Task.CompletedTask;
         }
 
-        [RavenAction("/databases/*/subscription/open", "POST",
-            "/databases/{databaseName:string}/subscription/open?id={subscriptionId:long}")]
+        [RavenAction("/databases/*/subscriptions/open", "POST",
+            "/databases/{databaseName:string}/subscriptions/open?id={subscriptionId:long}")]
         public Task Open()
         {
             var id = GetLongQueryString("id");
@@ -78,100 +80,63 @@ namespace Raven.Server.Documents.Handlers
             using (ContextPool.AllocateOperationContext(out context))
             {
                 Database.SubscriptionStorage.AssertSubscriptionConfigExists(id);
-                var options = context.ReadForDisk(HttpContext.Request.Body, "Subscriptions");
+                var options = context.ReadForDisk(RequestBodyStream(), "Subscriptions");
                 Database.SubscriptionStorage.OpenSubscription(id, options);
             }
 
-            Database.Notifications.RaiseNotifications(new DataSubscriptionChangeNotification
-            {
-                Id = id,
-                Type = DataSubscriptionChangeTypes.SubscriptionOpened
-            });
-
             return Task.CompletedTask;
         }
 
-        /*[HttpGet]
-        [RavenRoute("subscriptions/pull")]
-        [RavenRoute("/databases/{databaseName}/subscriptions/pull")]
-        public HttpResponseMessage Pull(long id, string connection)
+
+
+        private unsafe BlittableJsonReaderObject GetReaderObjectFromTableReader(TableValueReader tbl, int index, DocumentsOperationContext context)
         {
-            Database.Subscriptions.AssertOpenSubscriptionConnection(id, connection);
+            int criteriaSize;
+            var criteriaPtr = tbl.Read(index, out criteriaSize);
+            return new BlittableJsonReaderObject(criteriaPtr, criteriaSize, context);
+        }
 
-            var pushStreamContent = new PushStreamContent((stream, content, transportContext) => StreamToClient(id, Database.Subscriptions, stream))
+        private unsafe long GetLongValueFromTableReader(TableValueReader tbl, int index)
+        {
+            int size;
+            return *(long*)tbl.Read(index, out size);
+        }
+
+        private bool MatchCriteria(SubscriptionCriteria criteria, Document doc)
+        {
+            // todo: implement
+            return true;
+        }
+
+        public static long DocumentsPullTimeoutMiliseconds = 1000;
+
+        private static Task<WebSocketReceiveResult> _webSocketReceiveCompletedTask = Task.FromResult((WebSocketReceiveResult)null);
+
+
+        private async Task<WebSocketReceiveResult> ReadFromWebSocketWithKeepAlives(WebSocket ws, ArraySegment<byte> clientAckBuffer, MemoryStream ms)
+        {
+            var receiveAckTask = ws.ReceiveAsync(clientAckBuffer, Database.DatabaseShutdown);
+            while (Task.WhenAny(receiveAckTask, Task.Delay(5000)) != null &&
+                (receiveAckTask.IsCompleted || receiveAckTask.IsFaulted ||
+                    receiveAckTask.IsCanceled) == false)
             {
-                Headers =
-                {
-                    ContentType = new MediaTypeHeaderValue("application/json")
-                    {
-                        CharSet = "utf-8"
-                    }
-                }
-            };
+                ms.WriteByte((byte)'\r');
+                ms.WriteByte((byte)'\n');
+                // just to keep the heartbeat
+                await FlushStreamToClient(ms, ws, Database.DatabaseShutdown);
+            }
 
-            return new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = pushStreamContent
-            };
-        }*/
-
-        [RavenAction("/databases/*/subscription/acknowledgeBatch", "POST",
-            "/databases/{databaseName:string}/subscription/acknowledgeBatch?id={subscriptionId:string}&lastEtag={lastEtag:long}&connection={connection:string}"
+            return await receiveAckTask;
+        }
+        
+        [RavenAction("/databases/*/subscriptions/close", "POST",
+            "/databases/{databaseName:string}/subscriptions/close?id={subscriptionId:long}&connection={connection:string}&force={force:bool|optional}"
             )]
-        public Task AcknowledgeBatch()
+        public async Task Close()
         {
             var id = GetLongQueryString("id");
-            var lasEtag = GetLongQueryString("lastEtag");
             var connection = GetStringQueryString("connection");
-
-            Database.SubscriptionStorage.AssertOpenSubscriptionConnection(id, connection);
-
-            DocumentsOperationContext context;
-            using (ContextPool.AllocateOperationContext(out context))
-            {
-                try
-                {
-                    context.OpenWriteTransaction();
-                    Database.SubscriptionStorage.AcknowledgeBatchProcessed(id, lasEtag);
-                    context.Transaction.Commit();
-                }
-                catch (TimeoutException)
-                {
-                    var responseStream = ResponseBodyStream();
-                    var buffer = context.GetManagedBuffer();
-                    var message = "The subscription cannot be acknowledged because the timeout has been reached.";
-                    var byteLength = CopyStringToBuffer(buffer, message);
-                    responseStream.Write(buffer, 0, byteLength);
-                    HttpContext.Response.StatusCode = 408; // RequestTimout
-                }
-            }
-
-            return Task.CompletedTask;
-        }
-
-        private unsafe int CopyStringToBuffer(byte[] buffer, string message)
-        {
-            var messageByteLength = Encoding.UTF8.GetByteCount(message);
-
-            if (messageByteLength > buffer.Length)
-                // ReSharper disable once NotResolvedInText
-                throw new ArgumentOutOfRangeException("Message cannot be bigger than buffer");
-            fixed (byte* bufferPtr = buffer)
-            fixed (char* chars = message)
-            {
-                Encoding.UTF8.GetBytes(chars, message.Length, bufferPtr, messageByteLength);
-            }
-
-            return messageByteLength;
-        }
-                
-        [RavenAction("/databases/*/subscription/close", "POST",
-            "/databases/{databaseName:string}/subscription/close?id={subscriptionId:string}&connection={connection:string}&force={force:long}")]
-        public Task Close()
-        {
-            var id = GetLongQueryString("id");
-            var force = GetBoolValueQueryString("force");
-            var connection = GetStringQueryString("connection");
+            bool force = GetBoolValueQueryString("force",required:false);
 
             if (force == false)
             {
@@ -182,45 +147,194 @@ namespace Raven.Server.Documents.Handlers
                 catch (SubscriptionException)
                 {
                     // ignore if assertion exception happened on close
-                    HttpContext.Response.StatusCode = 200; 
-                    return Task.CompletedTask;
+                    return;
                 }
             }
-            HttpContext.Response.StatusCode = 200; 
+
             Database.SubscriptionStorage.ReleaseSubscription(id, force);
+            
 
-            Database.Notifications.RaiseNotifications(new DataSubscriptionChangeNotification
-            {
-                Id = id,
-                Type = DataSubscriptionChangeTypes.SubscriptionReleased
-            });
-
-            return Task.CompletedTask;
+            return;
         }
-        
-        [RavenAction("/databases/*/subscription/client-alive", "PATCH", 
-            "/databases/{databaseName:string}/subscription/client-alive?id={subscriptionId:string}&connection={connection:string}")]
-        public Task ClientAlive()
+
+        [RavenAction("/databases/*/subscriptions/pull", "GET",
+            "/databases/{databaseName:string}/subscriptions/pull?id={subscriptionId:long}&connection={connection:string}"
+            )]
+        public async Task Pull()
         {
             var id = GetLongQueryString("id");
             var connection = GetStringQueryString("connection");
+            Database.SubscriptionStorage.AssertOpenSubscriptionConnection(id, connection);
 
-            DocumentsOperationContext context;
-            using (ContextPool.AllocateOperationContext(out context))
+            var waitForMoreDocuments = new AsyncManualResetEvent();
+
+            var webSocket = await HttpContext.WebSockets.AcceptWebSocketAsync();
+
+            long lastEtagAcceptedFromClient = 0;
+            long lastEtagSentToClient =0;
+
+            try
             {
-                Database.SubscriptionStorage.AssertOpenSubscriptionConnection(id, connection);
-                context.OpenWriteTransaction();
-                Database.SubscriptionStorage.UpdateClientActivityDate(id);
-                context.Transaction.Commit();
+                DocumentsOperationContext context;
+                using (ContextPool.AllocateOperationContext(out context))
+                {
+                    Log.Debug("Starting subscription pushing");
+                    var clientAckBuffer = new ArraySegment<byte>(context.GetManagedBuffer());
+
+                    var ackParserState = new JsonParserState();
+                    using (var ms = new MemoryStream())
+                    using (var writer = new BlittableJsonTextWriter(context, ms))
+                    using (var ackParser = new UnmanagedJsonParser(context, ackParserState, string.Empty))
+                    {
+                        var config = Database.SubscriptionStorage.GetSubscriptionConfig(id);
+                        var options = Database.SubscriptionStorage.GetSubscriptionOptions(id);
+
+                        var startEtag = GetLongValueFromTableReader(config,
+                            SubscriptionStorage.Schema.SubscriptionTable.AckEtagIndex);
+                        var criteria = Database.SubscriptionStorage.GetCriteria(id, context);
+
+                        Action<DocumentChangeNotification> registerNotification = notification =>
+                        {
+                            if (notification.CollectionName == criteria.Collection)
+                            {
+                                var sp = Stopwatch.StartNew();
+                                waitForMoreDocuments.SetByAsyncCompletion();
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine($"Notification Waited for {sp.ElapsedMilliseconds}");
+                            }
+                        };
+                        Database.Notifications.OnDocumentChange += registerNotification;
+                        try
+                        {
+                            int skipNumber = 0;
+                            while (Database.DatabaseShutdown.IsCancellationRequested == false)
+                            {
+                                int documentsSent = 0;
+
+                                var hasDocuments = false;
+                                using (context.OpenReadTransaction())
+                                {
+                                    var documents = Database.DocumentsStorage.GetDocumentsAfter(context,
+                                        criteria.Collection,
+                                        startEtag+1, 0, options.MaxDocCount);
+
+                                    foreach (var doc in documents)
+                                    {
+                                        hasDocuments = true;
+                                        startEtag = doc.Etag;
+                                        if (MatchCriteria(criteria, doc) == false)
+                                        {
+                                            if (skipNumber++ % options.MaxDocCount == 0)
+                                            {
+                                                ms.WriteByte((byte)'\r');
+                                                ms.WriteByte((byte)'\n');
+                                            }
+                                            continue;
+                                        }
+                                        documentsSent++;
+                                        doc.EnsureMetadata();
+                                        context.Write(writer, doc.Data);
+                                        lastEtagSentToClient = doc.Etag;
+                                        doc.Data.Dispose();
+                                    }
+                                }
+
+                                if (hasDocuments == false)
+                                {
+                                    while (await waitForMoreDocuments.WaitAsync(TimeSpan.FromSeconds(5)) == false)
+                                    {
+                                        ms.WriteByte((byte)'\r');
+                                        ms.WriteByte((byte)'\n');
+                                        // just to keep the heartbeat
+                                        await FlushStreamToClient(ms, webSocket, Database.DatabaseShutdown);
+                                    }
+                                    
+                                    waitForMoreDocuments.Reset();
+                                    continue;
+                                }
+                                writer.Flush();
+                                await FlushStreamToClient(ms, webSocket, Database.DatabaseShutdown, true);
+                                Database.SubscriptionStorage.UpdateSubscriptionTimes(id, updateLastBatch: true,
+                                    updateClientActivity: false);
+
+                                if (documentsSent > 0)
+                                {
+                                    while (lastEtagAcceptedFromClient < lastEtagSentToClient)
+                                    {
+                                        using (var builder = new BlittableJsonDocumentBuilder(context,
+                                                BlittableJsonDocumentBuilder.UsageMode.None, string.Empty, ackParser,
+                                                ackParserState))
+                                        {
+                                            builder.ReadObject();
+
+                                            while (builder.Read() == false)
+                                            {
+                                                var result =
+                                                    await
+                                                        ReadFromWebSocketWithKeepAlives(webSocket, clientAckBuffer, ms);
+                                                ackParser.SetBuffer(new ArraySegment<byte>(clientAckBuffer.Array, 0,
+                                                    result.Count));
+                                            }
+
+                                            builder.FinalizeDocument();
+
+                                            using (var reader = builder.CreateReader())
+                                            {
+                                                if (reader.TryGet("LastEtag", out lastEtagAcceptedFromClient) == false)
+                                                    // ReSharper disable once NotResolvedInText
+                                                    throw new ArgumentNullException("LastEtag");
+                                            }
+                                        }
+                                    }
+                                    
+                                    Database.SubscriptionStorage.UpdateSubscriptionTimes(id, updateLastBatch: false,
+                                        updateClientActivity: true);
+                                    Database.SubscriptionStorage.AcknowledgeBatchProcessed(id, startEtag);
+                                }
+                            }
+                        }
+                        finally
+                        {
+                            Database.Notifications.OnDocumentChange -= registerNotification;
+                        }
+
+
+                    }
+                    
+                }
             }
-            HttpContext.Response.StatusCode = 200;
-            return Task.CompletedTask;
+            catch (Exception e)
+            {
+                try
+                {
+                    var cancellationCts = new CancellationTokenSource();
+                    var shudownTimeout = new CancellationTimeout(cancellationCts,
+                        TimeSpan.FromSeconds(5));
+                    await webSocket.CloseAsync(WebSocketCloseStatus.InternalServerError,
+                        e.ToString(), Database.DatabaseShutdown);
+                }
+                catch
+                {
+                    // ignored
+                }
+                
+                Log.ErrorException($"Failure in subscription id {id}", e);
+            }
+            finally
+            {
+                webSocket.Dispose();
+            }
         }
 
+        private static async Task FlushStreamToClient(MemoryStream ms, WebSocket webSocket, CancellationToken ct, bool endMessage = false)
+        {
+            ArraySegment<byte> bytes;
+            ms.TryGetBuffer(out bytes);
+            await webSocket.SendAsync(bytes, WebSocketMessageType.Text, endMessage, ct);
+            ms.SetLength(0);
+        }
 
-       
-
-        [RavenAction("/databases/*/subscription", "GET", "/databases/{databaseName:string}/subscription?start={start:int}&pageSize={pageSize:int}")]
+        [RavenAction("/databases/*/subscriptions", "GET", "/databases/{databaseName:string}/subscriptions?start={start:int}&pageSize={pageSize:int}")]
         public Task Get()
         {
             var start = GetStart();
@@ -232,55 +346,22 @@ namespace Raven.Server.Documents.Handlers
                 var subscriptionTableValues = Database.SubscriptionStorage.GetSubscriptions(start, take);
                 using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
                 {
-                    WriteSubscriptionTableValues(writer, context, subscriptionTableValues);
+                    Database.SubscriptionStorage.WriteSubscriptionTableValues(writer, context, subscriptionTableValues);
                 }
             }
             HttpContext.Response.StatusCode = 200;
             return Task.CompletedTask;
         }
 
-        /* public class SubscriptionConfig
-           {
-               public long SubscriptionId { get; set; }
-               public SubscriptionCriteria Criteria { get; set; }
-               public long? AckEtag { get; set; }
-               public long TimeOfSendingLastBatch { get; set; }
-               public long TimeOfLastClientActivity { get; set; }
-           }*/
-
-        private unsafe void WriteSubscriptionTableValues(BlittableJsonTextWriter writer,
-            DocumentsOperationContext context, IEnumerable<TableValueReader> subscriptions)
+        [RavenAction("/databases/*/subscriptions/client-alive", "PATCH", "/databases/{databaseName:string}/subscriptions/client-alive?id={id:string}&connection={connection:string}")]
+        public Task ClientAlive()
         {
-            writer.WriteStartArray();
-            foreach (var subscriptionTableValue in subscriptions)
-            {
-                writer.WriteStartObject();
-                int longSize;
-                var subscriptionId =
-                    *(long*)subscriptionTableValue.Read(SubscriptionStorage.Schema.SubscriptionTable.IdIndex, out longSize);
-                int criteriaSize;
-                var criteriaPtr =
-                    subscriptionTableValue.Read(SubscriptionStorage.Schema.SubscriptionTable.CriteriaIndex, out criteriaSize);
-                var ackEtag =
-                    *(long*)subscriptionTableValue.Read(SubscriptionStorage.Schema.SubscriptionTable.AckEtagIndex, out longSize);
-                var timeOfSendingLastBatch =
-                    *(long*)subscriptionTableValue.Read(SubscriptionStorage.Schema.SubscriptionTable.TimeOfSendingLastBatch, out longSize);
-                var timeOfLastClientActivity =
-                    *(long*)subscriptionTableValue.Read(SubscriptionStorage.Schema.SubscriptionTable.TimeOfLastActivityIndex, out longSize);
+            var id = GetLongQueryString("id");
+            var connection = GetStringQueryString("connection");
 
-                writer.WritePropertyName(context.GetLazyStringForFieldWithCaching("Id"));
-                writer.WriteInteger(subscriptionId);
-                writer.WritePropertyName(context.GetLazyStringForFieldWithCaching("Criteria"));
-                context.Write(writer, new BlittableJsonReaderObject(criteriaPtr, criteriaSize, context));
-                writer.WritePropertyName(context.GetLazyStringForFieldWithCaching("AckEtag"));
-                writer.WriteInteger(ackEtag);
-                writer.WritePropertyName(context.GetLazyStringForFieldWithCaching("TimeOfSendingLastBatch"));
-                writer.WriteInteger(timeOfSendingLastBatch);
-                writer.WritePropertyName(context.GetLazyStringForFieldWithCaching("TimeOfLastClientActivity"));
-                writer.WriteInteger(timeOfLastClientActivity);
-                writer.WriteEndObject();
-            }
-            writer.WriteEndArray();
+            Database.SubscriptionStorage.AssertOpenSubscriptionConnection(id, connection);
+            Database.SubscriptionStorage.UpdateSubscriptionTimes(id, updateClientActivity: true, updateLastBatch: false);
+            return Task.CompletedTask;
         }
 
         /*private void StreamToClient(long id, SubscriptionActions subscriptions, Stream stream)

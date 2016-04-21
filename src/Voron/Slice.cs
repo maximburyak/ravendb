@@ -50,6 +50,17 @@ namespace Voron
             return Compare(other) == 0;
         }
 
+        public Slice(long* ptr)
+            :this((byte*)ptr, sizeof(long))
+        {
+            
+        }
+
+        public Slice(ulong* ptr)
+            : this((byte*)ptr, sizeof(ulong))
+        {
+
+        }
         public Slice(byte* key, ushort size) 
             : this( SliceOptions.Key, size, size )
         {

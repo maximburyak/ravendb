@@ -298,15 +298,17 @@ namespace Raven.Server.Documents
             else if (Match(command, "unwatch-replication-conflicts"))
             {
                 UnwatchAllReplicationConflicts();
-            }
+            }*/
+
+            // todo: implement bulk operations watch
             else if (Match(command, "watch-bulk-operation"))
             {
-                WatchBulkInsert(commandParameter);
+                WatchAllDocuments();//WatchBulkInsert(commandParameter);
             }
             else if (Match(command, "unwatch-bulk-operation"))
             {
-                UnwatchBulkInsert(commandParameter);
-            }
+                WatchAllDocuments();//UnwatchBulkInsert(commandParameter);
+            }/*
             else if (Match(command, "watch-data-subscriptions"))
             {
                 WatchAllDataSubscriptions();

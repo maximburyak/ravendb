@@ -59,5 +59,10 @@ namespace Voron.Data.Tables
                     throw new ArgumentOutOfRangeException(nameof(_elementSize), "Unknown element size " + _elementSize);
             }
         }
+
+        public long* Read(int index, out object size)
+        {
+            throw new NotImplementedException();
+        }
     }
 }
