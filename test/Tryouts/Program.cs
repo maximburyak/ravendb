@@ -46,7 +46,7 @@ namespace Tryouts
                  Console.WriteLine($"iteration {i}; after set: {sp.ElapsedMilliseconds}");
 
              }*/
-
+             
             for (var i = 0; i < 100; i++)
             {
                 var sp = Stopwatch.StartNew();

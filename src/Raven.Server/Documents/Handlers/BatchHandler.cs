@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 using System.IO;
 using System.Threading.Tasks;
 using Raven.Abstractions;
@@ -29,6 +30,7 @@ namespace Raven.Server.Documents.Handlers
         [RavenAction("/databases/*/bulk_docs", "POST")]
         public async Task BulkDocs()
         {
+            var sp = Stopwatch.StartNew();
             DocumentsOperationContext context;
             using (ContextPool.AllocateOperationContext(out context))
             {
@@ -111,7 +113,10 @@ namespace Raven.Server.Documents.Handlers
                 }
 
                 var reply = new DynamicJsonArray();
-
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine("Bulk Before Transaction: "+ sp.ElapsedMilliseconds);
+                sp.Restart();
+                Console.ForegroundColor = ConsoleColor.White;
                 using (context.OpenWriteTransaction())
                 {
                     for (int i = 0; i < parsedCommands.Length; i++)
@@ -167,14 +172,27 @@ namespace Raven.Server.Documents.Handlers
                                 break;
                         }
                     }
+                    Console.ForegroundColor = ConsoleColor.Cyan;
+                    Console.WriteLine("Bulk After all puts: " + sp.ElapsedMilliseconds);
+                    sp.Restart();
+                    Console.ForegroundColor = ConsoleColor.White;
 
                     context.Transaction.Commit();
+                    Console.ForegroundColor = ConsoleColor.Cyan;
+                    Console.WriteLine("Bulk After commit: " + sp.ElapsedMilliseconds);
+                    sp.Restart();
+                    Console.ForegroundColor = ConsoleColor.White;
                 }
 
                 HttpContext.Response.StatusCode = 201;
 
                 using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
                     context.Write(writer, reply);
+
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine("Bulk After Reply: " + sp.ElapsedMilliseconds);
+                sp.Restart();
+                Console.ForegroundColor = ConsoleColor.White;
             }
         }
     }

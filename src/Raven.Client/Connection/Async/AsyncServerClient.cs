@@ -31,6 +31,7 @@ using Raven.Json.Linq;
 using System;
 using System.Collections.Generic;
 using System.Collections.Specialized;
+using System.Diagnostics;
 using System.Globalization;
 using Raven.Client.Util.Auth;
 using System.IO;
@@ -1411,6 +1412,7 @@ namespace Raven.Client.Connection.Async
         {
             return ExecuteWithReplication(HttpMethod.Post, async operationMetadata =>
             {
+                var sp = Stopwatch.StartNew();
                 using (var request = jsonRequestFactory.CreateHttpJsonRequest(new CreateHttpJsonRequestParams(this, operationMetadata.Url + "/bulk_docs", HttpMethod.Post, operationMetadata.Credentials, convention, GetRequestTimeMetric(operationMetadata.Url)).AddOperationHeaders(OperationsHeaders)))
                 {
                     request.AddRequestExecuterAndReplicationHeaders(this, operationMetadata.Url);
@@ -1421,13 +1423,30 @@ namespace Raven.Client.Connection.Async
                     ErrorResponseException responseException;
                     try
                     {
+                        Console.ForegroundColor = ConsoleColor.Cyan;
+                        Console.WriteLine("Client Bulk Before Write: " + sp.ElapsedMilliseconds);
+                        sp.Restart();
+                        Console.ForegroundColor = ConsoleColor.White;
                         await request.WriteAsync(jArray).WithCancellation(token).ConfigureAwait(false);
+                        Console.ForegroundColor = ConsoleColor.Cyan;
+                        Console.WriteLine("Client Bulk After Write: " + sp.ElapsedMilliseconds);
+                        sp.Restart();
+                        Console.ForegroundColor = ConsoleColor.White;
                         var response = (RavenJArray)await request.ReadResponseJsonAsync().WithCancellation(token).ConfigureAwait(false);
+                        Console.ForegroundColor = ConsoleColor.Cyan;
+                        Console.WriteLine("Client Bulk After Read: " + sp.ElapsedMilliseconds);
+                        sp.Restart();
+                        Console.ForegroundColor = ConsoleColor.White;
                         if (response == null)
                         {
                             throw new InvalidOperationException("Got null response from the server after doing a batch, something is very wrong. Probably a garbled response. Posted: " + jArray);
                         }
-                        return convention.CreateSerializer().Deserialize<BatchResult[]>(new RavenJTokenReader(response));
+                        var batchResults = convention.CreateSerializer().Deserialize<BatchResult[]>(new RavenJTokenReader(response));
+                        Console.ForegroundColor = ConsoleColor.Cyan;
+                        Console.WriteLine("Client Bulk After Deserialize: " + sp.ElapsedMilliseconds);
+                        sp.Restart();
+                        Console.ForegroundColor = ConsoleColor.White;
+                        return batchResults;
                     }
                     catch (ErrorResponseException e)
                     {

@@ -201,6 +201,7 @@ namespace Raven.Server.Documents.Handlers
                                 waitForMoreDocuments.SetByAsyncCompletion();
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine($"Notification Waited for {sp.ElapsedMilliseconds}");
+                                Console.ForegroundColor = ConsoleColor.White;
                             }
                         };
                         Database.Notifications.OnDocumentChange += registerNotification;

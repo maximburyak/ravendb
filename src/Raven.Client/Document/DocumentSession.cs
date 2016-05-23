@@ -744,8 +744,11 @@ namespace Raven.Client.Document
                     return;
                 IncrementRequestCount();
                 LogBatch(data);
-
+                var sp = Stopwatch.StartNew();
+                Console.ForegroundColor = ConsoleColor.Magenta;
                 var batchResults = DatabaseCommands.Batch(data.Commands);
+                Console.WriteLine($"DocumentCommands Took {sp.ElapsedMilliseconds}");
+                Console.ForegroundColor = ConsoleColor.White;
                 if (batchResults == null)
                     throw new InvalidOperationException("Cannot call Save Changes after the document store was disposed.");
                 UpdateBatchResults(batchResults, data);

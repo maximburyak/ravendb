@@ -9,6 +9,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Server.Kestrel.Http;
 using Microsoft.Extensions.Primitives;
 using Raven.Abstractions.Data;
 using Raven.Server.Documents.Includes;
@@ -234,6 +235,7 @@ namespace Raven.Server.Documents.Handlers
         [RavenAction("/databases/*/docs", "PUT", "/databases/{databaseName:string}/docs?id={documentId:string}")]
         public async Task Put()
         {
+            var sp2 = Stopwatch.StartNew();
             DocumentsOperationContext context;
             using (ContextPool.AllocateOperationContext(out context))
             {
@@ -244,14 +246,23 @@ namespace Raven.Server.Documents.Handlers
                 var etag = GetLongFromHeaders("If-Match");
 
                 PutResult putResult;
+                var sp = Stopwatch.StartNew();
                 using (context.OpenWriteTransaction())
                 {
                     Database.Metrics.DocPutsPerSecond.Mark();
+                    Console.WriteLine($"Mark Tool {sp.ElapsedMilliseconds}");
+                    sp.Restart();
+                    Console.ForegroundColor=ConsoleColor.Yellow;
                     putResult = Database.DocumentsStorage.Put(context, ids[0], etag, doc);
+                    Console.WriteLine($"Put Took {sp.ElapsedMilliseconds}");
+                    sp.Restart();
                     context.Transaction.Commit();
+                    Console.WriteLine($"Commit Took {sp.ElapsedMilliseconds}");
+                    sp.Restart();
                     // we want to release the transaction before we write to the network
                 }
-
+                Console.WriteLine($"Close transaction {sp.ElapsedMilliseconds}");
+                Console.ForegroundColor = ConsoleColor.White;
                 HttpContext.Response.StatusCode = 201;
 
                 using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
@@ -268,6 +279,9 @@ namespace Raven.Server.Documents.Handlers
                     writer.WriteEndObject();
                 }
             }
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.WriteLine($"The whole Put Crap Took {sp2.ElapsedMilliseconds}");
+            Console.ForegroundColor = ConsoleColor.White;
         }
 
         [RavenAction("/databases/*/docs", "PATCH", "/databases/{databaseName:string}/docs?id={documentId:string}&test={isTestOnly:bool|optional(false)} body{ Patch:PatchRequest, PatchIfMissing:PatchRequest }")]

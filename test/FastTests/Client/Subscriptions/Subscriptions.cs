@@ -95,13 +95,19 @@ namespace FastTests.Client.Subscriptions
 
                 SpinWait.SpinUntil(() => list.Count == 5, 60000);
                 Console.WriteLine($"Waited For Subscription to end {sp.ElapsedMilliseconds}");
-                sp.Restart();
+                
                 Assert.Equal(list.Count, 5);
+                sp.Restart();
                 for (var j = 0; j < 2; j++)
                 {
                     list.Clear();
+                    
                     using (var session = store.OpenSession())
                     {
+                        Console.ForegroundColor = ConsoleColor.Green;
+                        Console.WriteLine($"Open Session Tool {sp.ElapsedMilliseconds}");
+                        sp.Restart();
+                        
                         for (var i = 0; i < 5; i++)
                         {
                             session.Store(new Thing
@@ -109,10 +115,17 @@ namespace FastTests.Client.Subscriptions
                                 Name = $"ThingNo{i}"
                             });
                         }
+                        Console.ForegroundColor = ConsoleColor.Green;
+                        Console.WriteLine($"5 Stores took {sp.ElapsedMilliseconds}");
+                        sp.Restart();
                         session.SaveChanges();
+                        Console.ForegroundColor = ConsoleColor.Green;
+                        Console.WriteLine($"Stored {j}th 5 Docs time {sp.ElapsedMilliseconds}");
+                        sp.Restart();
                     }
-                    Console.ForegroundColor = ConsoleColor.Blue;
-                    Console.WriteLine($"Stored {j}th 5 Docs time {sp.ElapsedMilliseconds}");
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.WriteLine($"Session closed in {sp.ElapsedMilliseconds}");
+
                     Console.ForegroundColor = ConsoleColor.White;
                     sp.Restart();
                     SpinWait.SpinUntil(() => list.Count == 5, 60000);
