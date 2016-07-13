@@ -159,9 +159,8 @@ namespace Raven.Server.Documents.TcpHandlers
                         {
                             context.Write(writer, new DynamicJsonValue
                             {
-                                ["Type"] = "CoonectionStatus",
-                                ["Status"] = "None",
-                                ["FreeText"] = e.ToString()
+                                ["Type"] = "Error",
+                                ["Exception"] = e.ToString()
                             });
                         }
                     }
@@ -183,9 +182,9 @@ namespace Raven.Server.Documents.TcpHandlers
                             {
                                 context.Write(writer, new DynamicJsonValue
                                 {
-                                    ["Type"] = "CoonectionStatus",
+                                    ["Type"] = "Error",
                                     ["Status"] = status,
-                                    ["FreeText"] = connection._options.ConnectionException.ToString()
+                                    ["Exception"] = connection._options.ConnectionException.ToString()
                                 });
                             }
                         }
