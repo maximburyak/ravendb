@@ -311,26 +311,7 @@ namespace Raven.Server.Documents
             }
         }
 
-        public class SubscriptionDynamicValue: DynamicJsonValue,IDisposable
-        {
-            private readonly BlittableJsonReaderObject _criteria;
-
-            public SubscriptionDynamicValue(long id, BlittableJsonReaderObject criteria, long ackEtag, long timeOfSendingLastBatch, long timeOfLastClientActivity)
-            {
-                _criteria = criteria;
-                this["SubscriptionId"] = id;
-                this["Criteria"] = criteria;
-                this["AckEtag"] = ackEtag;
-                this["TimeOfSendingLastBatch"] = timeOfSendingLastBatch;
-                this["TimeOfLastClientActivity"] = timeOfLastClientActivity;
-            }
-            public void Dispose()
-            {
-                _criteria?.Dispose();
-            }
-        }
-
-        private unsafe SubscriptionDynamicValue ExtractSubscriptionConfigValue(TableValueReader tvr, DocumentsOperationContext context)
+        private unsafe DynamicJsonValue ExtractSubscriptionConfigValue(TableValueReader tvr, DocumentsOperationContext context)
         {
             int size;
             var subscriptionId =
@@ -343,11 +324,17 @@ namespace Raven.Server.Documents
                 *(long*)tvr.Read(Schema.SubscriptionTable.TimeOfLastActivityIndex, out size);
             var criteria = new BlittableJsonReaderObject(tvr.Read(Schema.SubscriptionTable.CriteriaIndex, out size), size, context);
 
-            return new SubscriptionDynamicValue(subscriptionId,
-                criteria,
-                ackEtag,
-                timeOfSendingLastBatch,
-                timeOfLastClientActivity);
+            var criteriaInstance = JsonDeserialization.SubscriptionCriteria(criteria);
+            criteria.Dispose();
+
+            return new DynamicJsonValue
+                {
+                    ["SubscriptionId"] = subscriptionId,
+                    ["Criteria"] = criteria,
+                    ["AckEtag"] = ackEtag,
+                    ["TimeOfSendingLastBatch"] = timeOfSendingLastBatch,
+                    ["TimeOfLastClientActivity"] = timeOfLastClientActivity,
+                };
         }
 
         public void WriteSubscriptionTableValues(BlittableJsonTextWriter writer,
@@ -355,7 +342,7 @@ namespace Raven.Server.Documents
         {
             using (var tx = _environment.WriteTransaction())
             {
-                var subscriptions = new List<SubscriptionDynamicValue>();
+                var subscriptions = new List<DynamicJsonValue>();
                 var table = new Table(_subscriptionsSchema, Schema.SubsTree, tx);
                 var seen = 0;
                 var taken = 0;
@@ -374,10 +361,6 @@ namespace Raven.Server.Documents
                 }
                 context.Write(writer, new DynamicJsonArray(subscriptions));
                 writer.Flush();
-                foreach (var subscription in subscriptions)
-                {
-                    subscription.Dispose();
-                }
             }
         }
 
@@ -399,10 +382,6 @@ namespace Raven.Server.Documents
 
                 context.Write(writer, new DynamicJsonArray(connections));
                 writer.Flush();
-                foreach (var connection in connections)
-                {
-                    connection.Dispose();
-                }
             }
         }
 
