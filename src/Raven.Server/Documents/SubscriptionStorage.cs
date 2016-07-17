@@ -12,6 +12,7 @@ using Raven.Abstractions.Exceptions.Subscriptions;
 using Raven.Database.Util;
 using Raven.Server.Json;
 using Raven.Server.ServerWide.Context;
+using Raven.Server.Utils.Metrics;
 using Sparrow.Binary;
 using Sparrow.Json;
 using Voron;
@@ -19,6 +20,7 @@ using Voron.Data.Tables;
 using Voron.Impl;
 using Sparrow;
 using Sparrow.Json.Parsing;
+using static Raven.Server.Utils.MetricsExtentions;
 
 //using SubscriptionTable = Raven.Server.Documents.SubscriptionStorage.Schema.SubscriptionTable;
 
@@ -33,14 +35,16 @@ namespace Raven.Server.Documents
         private readonly ConcurrentDictionary<long, SubscriptionConnectionState> _subscriptionConnectionStates = new ConcurrentDictionary<long, SubscriptionConnectionState>();
         private readonly TableSchema _subscriptionsSchema = new TableSchema();
         private readonly DocumentDatabase _db;
+        private readonly MetricsScheduler _metricsScheduler;
         private readonly StorageEnvironment _environment;
         private Logger _log; //todo: add logging
 
         private readonly UnmanagedBuffersPool _unmanagedBuffersPool;
 
-        public SubscriptionStorage(DocumentDatabase db)
+        public SubscriptionStorage(DocumentDatabase db, MetricsScheduler metricsScheduler)
         {
             _db = db;
+            _metricsScheduler = metricsScheduler;
             //TODO: You aren't copying all the other details from the configuration
             var options = _db.Configuration.Core.RunInMemory
                 ? StorageEnvironmentOptions.CreateMemoryOnly()
@@ -60,6 +64,10 @@ namespace Raven.Server.Documents
 
         public void Dispose()
         {
+            foreach (var state in _subscriptionConnectionStates.Values)
+            {
+                state.Dispose();
+            }
             _unmanagedBuffersPool.Dispose();
             _environment.Dispose();
         }
@@ -145,7 +153,7 @@ namespace Raven.Server.Documents
         public SubscriptionConnectionState OpenSubscription(SubscriptionConnectionOptions options)
         {
             return _subscriptionConnectionStates.GetOrAdd(options.SubscriptionId,
-                _ => new SubscriptionConnectionState(options));
+                _ => new SubscriptionConnectionState(options, _metricsScheduler));
         }
 
 
@@ -230,6 +238,7 @@ namespace Raven.Server.Documents
             if (_subscriptionConnectionStates.TryRemove(id, out subscriptionConnectionState))
             {
                 subscriptionConnectionState.EndConnection();
+                subscriptionConnectionState.Dispose();
             }
 
             using (var tx = _environment.WriteTransaction())
@@ -376,6 +385,7 @@ namespace Raven.Server.Documents
                     {
                         var config = ExtractSubscriptionConfigValue(GetSubscriptionConfig(x.Key, tx), context);
                         config["ClientUri"] = x.Value.Connection.ClientEndpoint.ToString();
+                        config["DocsRate"] = x.Value.DocsRate.CreateMeterData();
                         return config;
                     });
 
