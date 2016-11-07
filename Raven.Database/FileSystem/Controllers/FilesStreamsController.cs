@@ -1,16 +1,21 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Web.Http;
 using Raven.Abstractions.Data;
+using Raven.Abstractions.FileSystem;
 using Raven.Abstractions.Logging;
 using Raven.Abstractions.MEF;
 using Raven.Database.Extensions;
 using Raven.Database.FileSystem.Plugins;
+using Raven.Database.FileSystem.Storage;
+using Raven.Database.FileSystem.Util;
 using Raven.Database.Plugins;
 using Raven.Database.Server.WebApi.Attributes;
 using Raven.Imports.Newtonsoft.Json;
@@ -24,7 +29,7 @@ namespace Raven.Database.FileSystem.Controllers
 
 
         [HttpGet]
-        [RavenRoute("fs/{fileSystemName}/streams/files")]
+        [RavenRoute("fs/{fileSystemName}/streams/fileNames")]
         public HttpResponseMessage StreamFilesGet()
         {
             var etag = GetEtagFromQueryString();
@@ -93,6 +98,70 @@ namespace Raven.Database.FileSystem.Controllers
             }
         }
 
+        [HttpPost]
+        [RavenRoute("fs/{fileSystemName}/streams/Export")]
+        public async Task<HttpResponseMessage> Export()
+        {
+            var filesJson = await ReadJsonAsync().ConfigureAwait(false);
+            var fileNames = filesJson.Value<string[]>("FileNames");
+        
+            var pushStreamContent = new PushStreamContent((stream, content, transportContext) => StreamExportToClient( stream, fileNames))
+            {
+                Headers =
+                {
+                    
+                    ContentType = new MediaTypeHeaderValue("application/json")
+                    {
+                        CharSet = "utf-8",
+
+                    }
+                }
+            };
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = pushStreamContent
+            };
+        }
+
+        private void StreamExportToClient(Stream stream, string[] fileNames)
+        {
+            using (var gzip = new GZipStream(stream, CompressionMode.Compress, true))
+            {
+                var binaryWriter = new BinaryWriter(gzip);
+
+                var buffer = new byte[StorageConstants.MaxPageSize];
+                var pageBuffer = new byte[StorageConstants.MaxPageSize];
+
+                foreach (var name in fileNames)
+                {
+                    FileAndPagesInformation fileAndPages = null;
+
+                    Storage.Batch(accessor => fileAndPages = accessor.GetFile(name, 0, 0));
+
+                    // if we didn't find the document, we'll write "-1" to the stream, signaling that 
+                    if (fileAndPages.Metadata.Keys.Contains(SynchronizationConstants.RavenDeleteMarker))
+                    {
+                        if (log.IsDebugEnabled)
+                            log.Debug("File '{0}' is not accessible to get (Raven-Delete-Marker set)", name);
+
+                        binaryWriter.Write(-1);
+                        continue;
+                    }
+
+                    var fileSize = fileAndPages.UploadedSize;
+                    binaryWriter.Write(fileSize);
+
+                    var readingStream = StorageStream.Reading(Storage, name);
+                    var bytesRead = 0;
+                    do
+                    {
+                        bytesRead = readingStream.ReadUsingExternalTempBuffer(buffer,0,buffer.Length,pageBuffer);
+                        gzip.Write(buffer, 0, bytesRead);
+                    } while (bytesRead > 0);
+                }
+            }
+        }
 
         [HttpGet]
         [RavenRoute("fs/{fileSystemName}/streams/query")]

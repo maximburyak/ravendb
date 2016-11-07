@@ -1,17 +1,23 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using Raven.Abstractions.Data;
+using Raven.Abstractions.Extensions;
 using Raven.Abstractions.FileSystem;
 using Raven.Abstractions.Smuggler;
 using Raven.Abstractions.Smuggler.Data;
 using Raven.Abstractions.Util;
+using Raven.Client;
 using Raven.Client.Connection;
+using Raven.Client.Connection.Async;
 using Raven.Client.Document;
 using Raven.Client.FileSystem;
+using Raven.Client.FileSystem.Connection;
+using Raven.Client.FileSystem.Extensions;
 using Raven.Json.Linq;
 
 namespace Raven.Smuggler
@@ -75,9 +81,10 @@ namespace Raven.Smuggler
             ShowProgress("Streaming documents from {0}, batch size {1}", lastEtag, take);
             return await PrimaryStore.AsyncFilesCommands.StreamFileHeadersAsync(lastEtag, pageSize: take).ConfigureAwait(false);
         }
-
+        
         public virtual Task<Stream> DownloadFile(FileHeader file)
         {
+        
             return PrimaryStore.AsyncFilesCommands.DownloadAsync(file.FullPath);
         }
 
@@ -162,6 +169,36 @@ namespace Raven.Smuggler
             }
 
             return metadata;
+        }
+          
+        public async Task<Stream> StreamFiles(List<string> fileNamesList)
+        {
+            if (fileNamesList == null || fileNamesList.Count == 0)
+            {
+                throw new ArgumentException("Should receive file names");
+            }
+            var commands = (AsyncServerClientBase<FilesConvention, FilesReplicationInformer>) PrimaryStore.AsyncFilesCommands;
+
+            var uri = "/files/export";
+            
+            using (var request = commands.RequestFactory.CreateHttpJsonRequest(new CreateHttpJsonRequestParams(PrimaryStore.AsyncFilesCommands, PrimaryStore.AsyncFilesCommands.UrlFor() + uri, HttpMethods.Post, commands.PrimaryCredentials, commands.Conventions)).AddOperationHeaders(commands.OperationsHeaders))
+            {
+                try
+                {
+                    var fileNamesJson = RavenJObject.FromObject(new
+                    {
+                        FileNames = fileNamesList
+                    });
+                    
+                    await request.WriteAsync(fileNamesJson).ConfigureAwait(false);
+
+                    return new GZipStream(await request.Response.Content.ReadAsStreamAsync().ConfigureAwait(false),CompressionMode.Decompress);
+                }
+                catch (Exception e)
+                {
+                    throw e.SimplifyException();
+                }
+            }
         }
     }
 
