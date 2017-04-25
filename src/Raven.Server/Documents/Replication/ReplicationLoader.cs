@@ -105,14 +105,15 @@ namespace Raven.Server.Documents.Replication
         private readonly ConcurrentQueue<TaskCompletionSource<object>> _waitForReplicationTasks =
             new ConcurrentQueue<TaskCompletionSource<object>>();
 
-        public ServerStore Server;
-        public DatabaseRecord MyDatabaseRecord;
-        internal DatabaseTopology ReplicationTopology => MyDatabaseRecord.Topology;
-        public List<ReplicationNode> Destinations { get; private set; }
+        private readonly ServerStore _server;
+      
+        public List<ReplicationNode> Destinations => _destinations ?? new List<ReplicationNode>();
+        private List<ReplicationNode> _destinations;
+        public ConflictSolver ConflictSolverConfig;
 
         public ReplicationLoader(DocumentDatabase database, ServerStore server)
         {
-            Server = server;
+            _server = server;
             Database = database;
             _log = LoggingSource.Instance.GetLogger<ReplicationLoader>(Database.Name);
             _reconnectAttemptTimer = new Timer(AttemptReconnectFailedOutgoing,
@@ -187,7 +188,6 @@ namespace Raven.Server.Documents.Replication
 
                 throw;
             }
-
 
             try
             {
@@ -358,62 +358,82 @@ namespace Raven.Server.Documents.Replication
             if (_isInitialized) //precaution -> probably not necessary, but still...
                 return;
 
-            _isInitialized = true;
+            var record = LoadDatabaseRecord();
 
-            MyDatabaseRecord = LoadDatabaseRecord();
+            ConflictSolverConfig = record?.ConflictSolverConfig;
             ConflictResolver = new ResolveConflictOnReplicationConfigurationChange(this, _log);
-            InitializeOutgoingReplications();
             ConflictResolver.RunConflictResolversOnce();
+
+            lock (_locker)
+            {
+                _destinations = record?.Topology?.GetDestinations(_server.NodeTag, Database.Name);
+                InitializeOutgoingReplications();
+            }
+            _isInitialized = true;
         }
+
+        private readonly object _locker = new object();
 
         public void HandleDatabaseRecordChange()
         {
             var newRecord = LoadDatabaseRecord();
+            HandleConflictResolverChange(newRecord);
+            lock (_locker)
+            {
+                HandleTopologyChange(newRecord);
+            }
+        }
 
+        private void HandleConflictResolverChange(DatabaseRecord newRecord)
+        {
             if (newRecord == null)
             {
-                DropAllOutgoingConnections();
-                MyDatabaseRecord = null;
+                ConflictSolverConfig = null;
                 return;
             }
-
-            var connectionChanged = ReplicationTopology.FindConnectionChanges(newRecord.Topology, Server.NodeTag, Database.Name);
-            var conflictSolverChanged = MyDatabaseRecord.ConflictSolverConfig.ConflictResolutionChanged(newRecord.ConflictSolverConfig);
-
-            MyDatabaseRecord = newRecord;
-
-            if (connectionChanged.nodesToRemove.Count > 0)
-            {
-                // remove old connections
-                if (_log.IsInfoEnabled)
-                    _log.Info("Stopping obselete outgoing replication threads.");
-
-                DropOutgoingConnections(connectionChanged.nodesToRemove);
-            }
-
-            if (connectionChanged.nodesToAdd.Count > 0)
-            {
-                // add new connections
-                if (_log.IsInfoEnabled)
-                    _log.Info("Starting new replication threads.");
-
-                StartOutgoingConnections(connectionChanged.nodesToAdd);
-            }
-
-            UpdateDestinations();
-
+                
+            var conflictSolverChanged = ConflictSolverConfig?.ConflictResolutionChanged(newRecord.ConflictSolverConfig) ?? true;
+            
             if (conflictSolverChanged)
             {
                 if (_log.IsInfoEnabled)
                     _log.Info("Conflict resolution was change.");
-
+                ConflictSolverConfig = newRecord.ConflictSolverConfig;
                 ConflictResolver.RunConflictResolversOnce();
             }
-
         }
 
-        private void StartOutgoingConnections(IEnumerable<ReplicationNode> connectionsToAdd)
+        private void HandleTopologyChange(DatabaseRecord newRecord)
         {
+            if (newRecord == null)
+            {
+                DropOutgoingConnections(Destinations);
+                _destinations = null;
+                return;
+            }
+
+            var newDestinations = newRecord.Topology.GetDestinations(_server.NodeTag, Database.Name);
+            var connectionChanged = DatabaseTopology.FindConnectionChanges(_destinations, newDestinations);
+            _destinations = newDestinations;
+
+            if (connectionChanged.nodesToRemove.Count > 0)
+            {
+                DropOutgoingConnections(connectionChanged.nodesToRemove);
+            }
+            if (connectionChanged.nodesToAdd.Count > 0)
+            {
+                StartOutgoingConnections(connectionChanged.nodesToAdd);
+            }
+        }
+
+        private void StartOutgoingConnections(IReadOnlyCollection<ReplicationNode> connectionsToAdd)
+        {
+            if (connectionsToAdd.Count == 0)
+                return;
+
+            if (_log.IsInfoEnabled)
+                _log.Info($"Initializing {connectionsToAdd.Count:#,#} outgoing replications from {Database} on {_server.NodeTag}.");
+
             foreach (var destination in connectionsToAdd)
             {
                 if (destination.Disabled)
@@ -424,11 +444,20 @@ namespace Raven.Server.Documents.Replication
                     _log.Info($"Initialized outgoing replication for [{destination.NodeTag}/{destination.Url}]");
                 AddAndStartOutgoingReplication(destination);
             }
+
+            if (_log.IsInfoEnabled)
+                _log.Info("Finished initialization of outgoing replications..");
         }
 
-        private void DropOutgoingConnections(IEnumerable<ReplicationNode> connectionsToRemove)
+        private void DropOutgoingConnections(ICollection<ReplicationNode> connectionsToRemove)
         {
-            var outgoingChanged = _outgoing.Where(o => connectionsToRemove.Contains(o.Destination));
+            var outgoingChanged = _outgoing.Where(o => connectionsToRemove.Contains(o.Destination)).ToList();
+            if (outgoingChanged.Count == 0)
+                return; // no connections to remove
+
+            if (_log.IsInfoEnabled)
+                _log.Info($"Dropping {outgoingChanged.Count:#,#} outgoing replications connections from {Database} on {_server.NodeTag}.");
+
             foreach (var instance in outgoingChanged)
             {
                 if (_log.IsInfoEnabled)
@@ -445,86 +474,31 @@ namespace Raven.Server.Documents.Replication
             }
         }
 
-        private void DropAllOutgoingConnections()
-        {
-            _reconnectQueue.Clear();
-            foreach (var instance in _outgoing)
-            {
-                if (_log.IsInfoEnabled)
-                    _log.Info($"Stopping replication to {instance.Destination.Database} on {instance.Destination.NodeTag}.");
-
-                instance.Failed -= OnOutgoingSendingFailed;
-                instance.SuccessfulTwoWaysCommunication -= OnOutgoingSendingSucceeded;
-                instance.Dispose();
-            }
-            _lastSendEtagPerDestination.Clear();
-            _outgoingFailureInfo.Clear();
-            _reconnectQueue.Clear();
-            _numberOfSiblings = 0;
-        }
-
         private void InitializeOutgoingReplications()
         {
-            UpdateDestinations();
-
-            if (Destinations == null || //precaution
-                !Destinations.Any())
+            if (Destinations.Count == 0)
             {
                 if (_log.IsInfoEnabled)
                     _log.Info("Tried to initialize outgoing replications, but there is no replication document or destinations are empty. Nothing to do...");
 
                 _numberOfSiblings = 0;
                 Database.DocumentTombstoneCleaner?.Unsubscribe(this);
-
                 return;
             }
 
             Database.DocumentTombstoneCleaner.Subscribe(this);
 
-            if (_log.IsInfoEnabled)
-                _log.Info($"Initializing {Destinations.Count():#,#} outgoing replications..");
-
-            var countOfDestinations = 0;
-            foreach (var destination in Destinations)
-            {
-                if (destination.Disabled)
-                    continue;
-
-                countOfDestinations++;
-
-                AddAndStartOutgoingReplication(destination);
-                if (_log.IsInfoEnabled)
-                    _log.Info($"Initialized outgoing replication for [{destination.NodeTag}/{destination.Url}]");
-            }
-
-            _numberOfSiblings = countOfDestinations;
-
-            if (_log.IsInfoEnabled)
-                _log.Info("Finished initialization of outgoing replications..");
-        }
-
-
-        private void UpdateDestinations()
-        {
-            Destinations = ReplicationTopology?.GetDestinations(Server.NodeTag, Database.Name).ToList();
+            _numberOfSiblings = 0;
+            StartOutgoingConnections(Destinations);
         }
 
         private DatabaseRecord LoadDatabaseRecord()
         {
             TransactionOperationContext context;
-            using (Server.ContextPool.AllocateOperationContext(out context))
+            using (_server.ContextPool.AllocateOperationContext(out context))
             using (context.OpenReadTransaction())
             {
-                var databaseRecord = Server.Cluster.ReadDatabase(context, Database.Name);
-                if (databaseRecord == null)
-                {
-                    return null;
-                }
-                if (MyDatabaseRecord == null)
-                {
-                    MyDatabaseRecord = databaseRecord;
-                }
-                return databaseRecord;
+                return _server.Cluster.ReadDatabase(context, Database.Name);
             }
         }
 

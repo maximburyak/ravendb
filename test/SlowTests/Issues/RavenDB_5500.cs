@@ -11,7 +11,7 @@ namespace SlowTests.Issues
 {
     public class RavenDB_5500 : RavenTestBase
     {
-        [Fact]
+        [Fact(Skip = "RavenDB-6816")]
         public void WillThrowIfIndexPathIsNotDefinedInDatabaseConfiguration()
         {
             var path = NewDataPath();
@@ -27,7 +27,7 @@ namespace SlowTests.Issues
             }
         }
 
-        [Fact]
+        [Fact(Skip = "RavenDB-6816")]
         public async Task CanCreateInMemoryIndex()
         {
             var index = new Users_ByCity();

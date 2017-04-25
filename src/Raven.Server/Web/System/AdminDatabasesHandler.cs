@@ -6,6 +6,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Threading.Tasks;
@@ -56,7 +57,7 @@ namespace Raven.Server.Web.System
             return Task.CompletedTask;
         }
 
-        [RavenAction("/admin/databases", "GET", "/admin/databases/{databaseName:string}")]
+        [RavenAction("/admin/databases", "GET", "/admin/databases?name={databaseName:string}")]
         public Task Get()
         {
             var name = GetQueryStringValueAndAssertIfSingleAndNotEmpty("name");
@@ -239,7 +240,7 @@ namespace Raven.Server.Web.System
         }
         
         [RavenAction("/admin/modify-watchers", "POST", "/admin/modify-watchers?name={databaseName:string}")]
-        public async Task Update()
+        public async Task ModifyWathcers()
         {
             var name = GetQueryStringValueAndAssertIfSingleAndNotEmpty("name");  
 
@@ -251,12 +252,17 @@ namespace Raven.Server.Web.System
             TransactionOperationContext context;
             using (ServerStore.ContextPool.AllocateOperationContext(out context))
             {
-                var updateJson = await context.ReadForMemoryAsync(RequestBodyStream(), "read-modify-watchers");          
+                var updateJson = await context.ReadForMemoryAsync(RequestBodyStream(), "read-modify-watchers");
+                if (updateJson.TryGet(nameof(DatabaseTopology.Watchers), out BlittableJsonReaderArray watchers) == false)
+                {
+                    throw new InvalidDataException("NewWatchers property was not found.");
+                }
                 using (context.OpenReadTransaction())
                 {              
                     long etag;
                     var databaseRecord = ServerStore.Cluster.ReadDatabase(context, name, out etag);
-                    var index = await ServerStore.ModifyDatabaseWatchers(context, name, updateJson);
+                    
+                    var index = await ServerStore.ModifyDatabaseWatchers(context, name, watchers);
                     await ServerStore.Cluster.WaitForIndexNotification(index);
 
                     ServerStore.NotificationCenter.Add(DatabaseChanged.Create(name, DatabaseChangeType.Update));
@@ -290,13 +296,16 @@ namespace Raven.Server.Web.System
             using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
             {
                 var json = await context.ReadForMemoryAsync(RequestBodyStream(), "read-conflict-resolver");
+                var conflictResolver = (ConflictSolver)EntityToBlittable.ConvertToEntity(typeof(ConflictSolver), "convert-conflict-resolver", json, DocumentConventions.Default);
+                var conflictResolverJson = EntityToBlittable.ConvertEntityToBlittable(conflictResolver, DocumentConventions.Default, context);
                 using (context.OpenReadTransaction())
                 {
                     long etag;
                     var databaseRecord = ServerStore.Cluster.ReadDatabase(context, name, out etag);
-                    var index = await ServerStore.ModifyConflictSolverAsync(context, name, json);
-                    await ServerStore.Cluster.WaitForIndexNotification(index);
 
+                    var index = await ServerStore.ModifyConflictSolverAsync(context, name, conflictResolverJson);
+                    await ServerStore.Cluster.WaitForIndexNotification(index);
+                    
                     ServerStore.NotificationCenter.Add(DatabaseChanged.Create(name, DatabaseChangeType.Update));
 
                     HttpContext.Response.StatusCode = (int)HttpStatusCode.Created;
@@ -346,6 +355,7 @@ namespace Raven.Server.Web.System
                         ServerStore.NotificationCenter.Add(DatabaseChanged.Create(name, DatabaseChangeType.Delete));
                     }
                 }
+                await ServerStore.Cluster.WaitForIndexNotification(newEtag);
                 HttpContext.Response.StatusCode = (int)HttpStatusCode.OK;
 
                 using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))

@@ -1,8 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using Raven.Client.Documents;
-using Raven.Server.Json;
+using Raven.Server.Rachis;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
 
@@ -10,7 +11,7 @@ namespace Raven.Server.ServerWide.Commands
 {
     public class ModifyConflictSolverCommand : UpdateDatabaseCommand
     {
-        public BlittableJsonReaderObject Value;
+        public BlittableJsonReaderObject Solver;
 
         public ModifyConflictSolverCommand():base(null){}
 
@@ -18,13 +19,13 @@ namespace Raven.Server.ServerWide.Commands
         
         public override void UpdateDatabaseRecord(DatabaseRecord record, long etag)
         {
-            record.ConflictSolverConfig = JsonDeserializationServer.ConflictSolver(Value);
+            record.ConflictSolverConfig = JsonDeserializationRachis<ConflictSolver>.Deserialize(Solver);
         }
 
         public override void FillJson(DynamicJsonValue json)
         {
             json[nameof(DatabaseName)] = DatabaseName;
-            json[nameof(Value)] = Value;
+            json[nameof(ConflictSolver)] = Solver;
         }
     }
 }

@@ -5,6 +5,7 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using Raven.Client.Documents;
+using Raven.Client.Exceptions.Database;
 using Raven.Client.Server;
 using Raven.Client.Server.Operations;
 using Raven.Client.Util;
@@ -32,7 +33,17 @@ namespace FastTests
 
         private static int _counter;
 
-        protected DocumentDatabase CreateDocumentDatabase([CallerMemberName] string caller = null, bool runInMemory = true, string dataDirectory = null, Action<Dictionary<string, string>> modifyConfiguration = null)
+        protected IDisposable CreatePersistentDocumentDatabase(string dataDirectory, out DocumentDatabase db)
+        {
+            var database = CreateDocumentDatabase(runInMemory2: false, dataDirectory: dataDirectory);
+            db = database;
+            return new DisposableAction(() =>
+            {
+                DeleteDatabase(database.Name);
+            });
+        }
+
+        protected DocumentDatabase CreateDocumentDatabase([CallerMemberName] string caller = null, bool runInMemory2 = true, string dataDirectory = null, Action<Dictionary<string, string>> modifyConfiguration = null)
         {
             var name = caller != null ? $"{caller}_{Interlocked.Increment(ref _counter)}" : Guid.NewGuid().ToString("N");
 
@@ -44,7 +55,7 @@ namespace FastTests
             var configuration = new Dictionary<string, string>();
             configuration.Add(RavenConfiguration.GetKey(x => x.Indexing.MinNumberOfMapAttemptsAfterWhichBatchWillBeCanceledIfRunningLowOnMemory), int.MaxValue.ToString());
             configuration.Add(RavenConfiguration.GetKey(x => x.Core.DataDirectory), dataDirectory);
-            configuration.Add(RavenConfiguration.GetKey(x => x.Core.RunInMemory), runInMemory.ToString());
+            configuration.Add(RavenConfiguration.GetKey(x => x.Core.RunInMemory), runInMemory2.ToString());
             configuration.Add(RavenConfiguration.GetKey(x => x.Core.ThrowIfAnyIndexOrTransformerCouldNotBeOpened), "true");
 
             modifyConfiguration?.Invoke(configuration);
@@ -66,6 +77,20 @@ namespace FastTests
             }
         }
 
+        protected void DeleteDatabase(string dbName)
+        {
+            using (var store = new DocumentStore
+            {
+                Url = UseFiddler(Server.WebUrls[0]),
+                DefaultDatabase = dbName
+            })
+            {
+                store.Initialize();
+
+                store.Admin.Server.Send(new DeleteDatabaseOperation(dbName, true));
+            }
+        }
+
         protected override void Dispose(ExceptionAggregator exceptionAggregator)
         {
             if (_databases.Count == 0)
@@ -83,7 +108,16 @@ namespace FastTests
 
                     exceptionAggregator.Execute(() =>
                     {
-                        AsyncHelpers.RunSync(() => Server.ServerStore.DeleteDatabaseAsync(context, database, hardDelete: true, fromNode: Server.ServerStore.NodeTag));
+                        AsyncHelpers.RunSync(async () =>
+                        {
+                            try
+                            {
+                                await Server.ServerStore.DeleteDatabaseAsync(context, database, hardDelete: true, fromNode: Server.ServerStore.NodeTag);
+                            }
+                            catch (DatabaseDoesNotExistException)
+                            {
+                            }
+                        });
                     });
                 }
             }
