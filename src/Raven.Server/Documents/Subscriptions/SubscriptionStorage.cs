@@ -9,6 +9,7 @@ using Raven.Client.Documents.Subscriptions;
 using Raven.Client.Util;
 using Raven.Server.Documents.TcpHandlers;
 using Raven.Server.Json;
+using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 using Sparrow;
 using Sparrow.Binary;
@@ -25,16 +26,16 @@ namespace Raven.Server.Documents.Subscriptions
     public class SubscriptionStorage : IDisposable
     {
         private readonly DocumentDatabase _db;
+        private readonly ServerStore _serverStore;
         public static TimeSpan TwoMinutesTimespan = TimeSpan.FromMinutes(2);
         private readonly ConcurrentDictionary<long, SubscriptionState> _subscriptionStates = new ConcurrentDictionary<long, SubscriptionState>();
-        private readonly TableSchema _subscriptionsSchema = new TableSchema();
-        private readonly StorageEnvironment _environment;
         private readonly Logger _logger;
 
 
-        public SubscriptionStorage(DocumentDatabase db)
+        public SubscriptionStorage(DocumentDatabase db, ServerStore serverStore)
         {
             _db = db;
+            _serverStore = serverStore;
             var path = db.Configuration.Core.DataDirectory.Combine("Subscriptions");
 
             var options = db.Configuration.Core.RunInMemory
@@ -49,17 +50,10 @@ namespace Raven.Server.Documents.Subscriptions
             options.ForceUsing32BitsPager = db.Configuration.Storage.ForceUsing32BitsPager;
             options.TimeToSyncAfterFlashInSeconds = db.Configuration.Storage.TimeToSyncAfterFlashInSeconds;
             options.NumOfCocurrentSyncsPerPhysDrive = db.Configuration.Storage.NumOfCocurrentSyncsPerPhysDrive;
-
-
-            _environment = new StorageEnvironment(options);
+            
             var databaseName = db.Name;
 
             _logger = LoggingSource.Instance.GetLogger<SubscriptionStorage>(databaseName);
-            _subscriptionsSchema.DefineKey(new TableSchema.SchemaIndexDef
-            {
-                StartIndex = 0,
-                Count = 1
-            });
         }
 
         public void Dispose()
@@ -68,55 +62,48 @@ namespace Raven.Server.Documents.Subscriptions
             {
                 state.Dispose();
             }
-            _environment.Dispose();
+            
         }
 
         public void Initialize()
         {
-            var transactionPersistentContext = new TransactionPersistentContext();
-            using (var tx = _environment.WriteTransaction(transactionPersistentContext))
-            {
-                tx.CreateTree(SubscriptionSchema.IdsTree);
-                _subscriptionsSchema.Create(tx, SubscriptionSchema.SubsTree, 16);
-
-                tx.Commit();
-            }
+          
         }
 
         public unsafe long CreateSubscription(BlittableJsonReaderObject criteria, long ackEtag = 0)
         {
             // Validate that this can be properly parsed into a criteria object
             // and doing that without holding the tx lock
-            JsonDeserializationServer.SubscriptionCriteria(criteria);
+            var criteria = JsonDeserializationServer.SubscriptionCriteria(criteria);
+            this._db.
+            //var transactionPersistentContext = new TransactionPersistentContext();
+            //using (var tx = _environment.WriteTransaction(transactionPersistentContext))
+            //{
+            //    var table = tx.OpenTable(_subscriptionsSchema, SubscriptionSchema.SubsTree);
+            //    var subscriptionsTree = tx.ReadTree(SubscriptionSchema.IdsTree);
+            //    var id = subscriptionsTree.Increment(SubscriptionSchema.Id, 1);
 
-            var transactionPersistentContext = new TransactionPersistentContext();
-            using (var tx = _environment.WriteTransaction(transactionPersistentContext))
-            {
-                var table = tx.OpenTable(_subscriptionsSchema, SubscriptionSchema.SubsTree);
-                var subscriptionsTree = tx.ReadTree(SubscriptionSchema.IdsTree);
-                var id = subscriptionsTree.Increment(SubscriptionSchema.Id, 1);
+            //    const long timeOfSendingLastBatch = 0;
+            //    const long timeOfLastClientActivity = 0;
 
-                const long timeOfSendingLastBatch = 0;
-                const long timeOfLastClientActivity = 0;
+            //    var bigEndianId = Bits.SwapBytes((ulong)id);
 
-                var bigEndianId = Bits.SwapBytes((ulong)id);
+            //    TableValueBuilder tableValueBuilder;
+            //    using (table.Allocate(out tableValueBuilder))
+            //    {
+            //        tableValueBuilder.Add(bigEndianId);
+            //        tableValueBuilder.Add(criteria.BasePointer, criteria.Size);
+            //        tableValueBuilder.Add(ackEtag);
+            //        tableValueBuilder.Add(timeOfSendingLastBatch);
+            //        tableValueBuilder.Add(timeOfLastClientActivity);
+            //        table.Insert(tableValueBuilder);
+            //    }
+            //    tx.Commit();
+            //    if (_logger.IsInfoEnabled)
+            //        _logger.Info($"New Subscription With ID {id} was created");
 
-                TableValueBuilder tableValueBuilder;
-                using (table.Allocate(out tableValueBuilder))
-                {
-                    tableValueBuilder.Add(bigEndianId);
-                    tableValueBuilder.Add(criteria.BasePointer, criteria.Size);
-                    tableValueBuilder.Add(ackEtag);
-                    tableValueBuilder.Add(timeOfSendingLastBatch);
-                    tableValueBuilder.Add(timeOfLastClientActivity);
-                    table.Insert(tableValueBuilder);
-                }
-                tx.Commit();
-                if (_logger.IsInfoEnabled)
-                    _logger.Info($"New Subscription With ID {id} was created");
-
-                return id;
-            }
+            //    return id;
+            //}
         }
 
         public SubscriptionState OpenSubscription(SubscriptionConnection connection)
