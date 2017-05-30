@@ -8,6 +8,8 @@ using Tests.Infrastructure;
 using FastTests.Server.Documents.Notifications;
 using System.Collections.Generic;
 using Voron.Util;
+using Sparrow.Json;
+using System.Diagnostics;
 
 namespace SubscriptionFailoverBenchmark
 {
@@ -18,9 +20,10 @@ namespace SubscriptionFailoverBenchmark
         {
             using (var store = GetDocumentStore())
             {
-
-                var subscriptionTask = RunsSubscriptionSimple(store);
                 var documentsTask = GenerateDocuments(store);
+               // await documentsTask;
+                var subscriptionTask = RunsSubscriptionSimple(store);
+               // await subscriptionTask;
                 await Task.WhenAll(subscriptionTask, documentsTask);
             }
         }
@@ -28,23 +31,25 @@ namespace SubscriptionFailoverBenchmark
         private async Task GenerateDocuments(DocumentStore store)
         {
             var j = 0;
-            
+
+            const int docsPerBatch = 2000;
             do
             {
                 try
                 {
-                    using (var session = store.OpenAsyncSession())
+                    var sp = Stopwatch.StartNew();
+                    using (var bi = store.BulkInsert())
                     {
-                        for (var i=0 ; i < 1000 ; j++,i++)
+                        
+                        for (var i = 0; i < docsPerBatch; j++, i++)
                         {
-                            await session.StoreAsync(new User
+                            await bi.StoreAsync(new User
                             {
-                                Name = "User"+j
+                                Name = "User" + j
                             });
                         }
-
-                        await session.SaveChangesAsync();
                     }
+                    Console.WriteLine($"{j} generated, took {sp.ElapsedMilliseconds}, temp: {((double)docsPerBatch/sp.ElapsedMilliseconds)*1000} per second");
                 }
                 catch (Exception)
                 {
@@ -57,16 +62,23 @@ namespace SubscriptionFailoverBenchmark
 
         public async Task RunsSubscriptionSimple(DocumentStore store)
         {
-            var subscriptionId = await store.AsyncSubscriptions.CreateAsync<User>(
-                new SubscriptionCreationOptions<User>());
+            var subscriptionId = await store.AsyncSubscriptions.CreateAsync(
+                new SubscriptionCreationOptions()
+                {
+                    Criteria = new SubscriptionCriteria
+                    {
+                        Collection = "Users"
+                    }
+                });
 
-            var subscripiton = store.AsyncSubscriptions.Open<User>(new SubscriptionConnectionOptions(subscriptionId)
+            var subscripiton = store.AsyncSubscriptions.Open<BlittableJsonReaderObject>(new SubscriptionConnectionOptions(subscriptionId)
             {
                 MaxDocsPerBatch = 1024
             });
             var counter = 0;
             var tcs = new TaskCompletionSource<bool>();
 
+            var sp = Stopwatch.StartNew();
             
 
             subscripiton.Subscribe(x =>
@@ -76,9 +88,11 @@ namespace SubscriptionFailoverBenchmark
 
             subscripiton.AfterAcknowledgment += () =>
             {
-                Console.WriteLine($"{ subscriptionId}: {counter}");
+                Console.WriteLine($"{ subscriptionId}: {counter}. It took {sp.ElapsedMilliseconds}");
                 if (counter == DocsAmount)
                     tcs.SetResult(true);
+
+                sp.Restart();
             };
 
             await subscripiton.StartAsync();
@@ -86,7 +100,7 @@ namespace SubscriptionFailoverBenchmark
             await tcs.Task;
         }
 
-        const int DocsAmount = 1000000;
+        const int DocsAmount = 1_000_000;
         const int nodesAmount = 3;
         const int docsCreationTasksAmount = 3;
         const int subscriptionCreationTasksAmount = 5;
@@ -176,7 +190,7 @@ namespace SubscriptionFailoverBenchmark
                 {
                     Console.WriteLine($"{ subscriptionId}: {counter}");
                     if (counter == 1 * DocsAmount)
-                        tcs.SetResult(true);
+                        tcs.SetResult(true);                    
                 };
 
                 subscripiton.SubscriptionConnectionInterrupted += (Exception ex, bool willReconnect) =>
@@ -252,7 +266,7 @@ namespace SubscriptionFailoverBenchmark
     {
         static void Main(string[] args)
         {
-            new SubscriptionFailoverBenchmark().RunTest().Wait();
+            new SubscriptionFailoverBenchmark().RunTestSimple().Wait();
         }
     }
 }
