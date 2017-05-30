@@ -26,6 +26,7 @@ namespace Raven.Server.Documents.TcpHandlers
 {
     public class SubscriptionConnection : IDisposable
     {
+        private const int MinBatchTime = 1000;
         private static readonly StringSegment DataSegment = new StringSegment("Data");
         private static readonly StringSegment TypeSegment = new StringSegment("Type");
 
@@ -333,6 +334,7 @@ namespace Raven.Server.Documents.TcpHandlers
                     using (docsContext.OpenReadTransaction())
                     {
                         var sendingCurrentBatchStopwatch = Stopwatch.StartNew();
+                        var sendingCurrentBatchTotalTime = Stopwatch.StartNew();
 
                         _buffer.SetLength(0);
 
@@ -342,76 +344,85 @@ namespace Raven.Server.Documents.TcpHandlers
                         using (TcpConnection.ContextPool.AllocateOperationContext(out context))
                         using (var writer = new BlittableJsonTextWriter(context, _buffer))
                         {
-                            foreach (var doc in TcpConnection.DocumentDatabase.DocumentsStorage.GetDocumentsFrom(
-                                docsContext,
-                                subscription.Criteria.Collection,
-                                startEtag + 1,
-                                0,
-                                _options.MaxDocsPerBatch))
+                            // we want to prevent too short batches
+                            while (sendingCurrentBatchTotalTime.ElapsedMilliseconds < MinBatchTime)
                             {
-                                using (doc.Data)
+                                foreach (var doc in TcpConnection.DocumentDatabase.DocumentsStorage.GetDocumentsFrom(
+                                                    docsContext,
+                                                    subscription.Criteria.Collection,
+                                                    startEtag + 1,
+                                                    0,
+                                                    _options.MaxDocsPerBatch))
                                 {
-                                    BlittableJsonReaderObject transformResult;
-                                    if (ShouldSendDocument(subscription, patch, docsContext, doc, out transformResult) == false)
+                                    using (doc.Data)
                                     {
-                                        // make sure that if we read a lot of irrelevant documents, we send keep alive over the network
-                                        if (sendingCurrentBatchStopwatch.ElapsedMilliseconds > 1000)
+                                        BlittableJsonReaderObject transformResult;
+                                        if (ShouldSendDocument(subscription, patch, docsContext, doc, out transformResult) == false)
                                         {
-                                            await SendHeartBeat();
-                                            sendingCurrentBatchStopwatch.Reset();
+                                            // make sure that if we read a lot of irrelevant documents, we send keep alive over the network
+                                            if (sendingCurrentBatchStopwatch.ElapsedMilliseconds > 1000)
+                                            {
+                                                await SendHeartBeat();
+                                                sendingCurrentBatchStopwatch.Reset();
+                                            }
+                                            continue;
                                         }
-                                        continue;
-                                    }
 
-                                    lastChangeVector = ChangeVectorUtils.MergeVectors(doc.ChangeVector, subscription.ChangeVector);
-                                    anyDocumentsSentInCurrentIteration = true;
-                                    startEtag = doc.Etag;
+                                        lastChangeVector = ChangeVectorUtils.MergeVectors(doc.ChangeVector, subscription.ChangeVector);
+                                        anyDocumentsSentInCurrentIteration = true;
+                                        startEtag = doc.Etag;
 
-                                    writer.WriteStartObject();
-                                    writer.WritePropertyName(context.GetLazyStringForFieldWithCaching(TypeSegment));
-                                    writer.WriteValue(BlittableJsonToken.String, context.GetLazyStringForFieldWithCaching(DataSegment));
-                                    writer.WriteComma();
-                                    writer.WritePropertyName(context.GetLazyStringForFieldWithCaching(DataSegment));
+                                        writer.WriteStartObject();
+                                        writer.WritePropertyName(context.GetLazyStringForFieldWithCaching(TypeSegment));
+                                        writer.WriteValue(BlittableJsonToken.String, context.GetLazyStringForFieldWithCaching(DataSegment));
+                                        writer.WriteComma();
+                                        writer.WritePropertyName(context.GetLazyStringForFieldWithCaching(DataSegment));
 
-                                    if (transformResult != null)
-                                    {
-                                        var newDoc = new Document
+                                        if (transformResult != null)
                                         {
-                                            Id = doc.Id,
-                                            Etag = doc.Etag,
-                                            Data = transformResult,
-                                            LowerId = doc.LowerId
-                                        };
+                                            var newDoc = new Document
+                                            {
+                                                Id = doc.Id,
+                                                Etag = doc.Etag,
+                                                Data = transformResult,
+                                                LowerId = doc.LowerId
+                                            };
 
-                                        newDoc.EnsureMetadata();
-                                        writer.WriteDocument(docsContext, newDoc);
-                                        transformResult.Dispose();
-                                    }
-                                    else
-                                    {
-                                        doc.EnsureMetadata();
-                                        writer.WriteDocument(docsContext, doc);
-                                        doc.Data.Dispose();
-                                    }
-
-                                    writer.WriteEndObject();
-                                    docsToFlush++;
-
-                                    // perform flush for current batch after 1000ms of running
-                                    if (sendingCurrentBatchStopwatch.ElapsedMilliseconds > 1000)
-                                    {
-                                        if (docsToFlush > 0)
-                                        {
-                                            await FlushDocsToClient(writer, docsToFlush);
-                                            docsToFlush = 0;
-                                            sendingCurrentBatchStopwatch.Reset();
+                                            newDoc.EnsureMetadata();
+                                            writer.WriteDocument(docsContext, newDoc);
+                                            transformResult.Dispose();
                                         }
                                         else
                                         {
-                                            await SendHeartBeat();
+                                            doc.EnsureMetadata();
+                                            writer.WriteDocument(docsContext, doc);
+                                            doc.Data.Dispose();
+                                        }
+
+                                        writer.WriteEndObject();
+                                        docsToFlush++;
+
+                                        // perform flush for current batch after 1000ms of running
+                                        if (sendingCurrentBatchStopwatch.ElapsedMilliseconds > 1000)
+                                        {
+                                            if (docsToFlush > 0)
+                                            {
+                                                await FlushDocsToClient(writer, docsToFlush);
+                                                docsToFlush = 0;
+                                                sendingCurrentBatchStopwatch.Reset();
+                                            }
+                                            else
+                                            {
+                                                await SendHeartBeat();
+                                            }
                                         }
                                     }
                                 }
+
+                                var timeLeft = MinBatchTime - sendingCurrentBatchTotalTime.ElapsedMilliseconds;
+                                if (timeLeft > 0)
+                                    await _waitForMoreDocuments.WaitAsync(TimeSpan.FromMilliseconds(timeLeft));
+
                             }
 
                             if (anyDocumentsSentInCurrentIteration)
