@@ -17,7 +17,7 @@ using Sparrow.Logging;
 using JavaScriptException = Raven.Client.Documents.Exceptions.Patching.JavaScriptException;
 
 namespace Raven.Server.Documents.Patch
-{
+{    
     public abstract class DocumentPatcherBase
     {
         private const int MaxRecursionDepth = 128;
