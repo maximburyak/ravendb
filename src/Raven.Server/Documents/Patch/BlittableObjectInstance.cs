@@ -31,7 +31,7 @@ namespace Raven.Server.Documents.Patch
         {
             if (Properties.TryGetValue(propertyName, out PropertyDescriptor descriptor) == false)
             {
-                descriptor = new BlittablePropertyDescriptor(Engine, this, propertyName);
+                descriptor = new BlittablePropertyDescriptor(Engine, this._parent, propertyName);
                 Properties[propertyName] = descriptor;
             }
             return descriptor;
@@ -40,13 +40,13 @@ namespace Raven.Server.Documents.Patch
         public class BlittablePropertyDescriptor : PropertyDescriptor
         {
             private Engine _engine;
-            private BlittableObjectInstance _self;
+            public readonly BlittableJsonReaderObject Self;
             private string _name;
 
-            public BlittablePropertyDescriptor(Engine engine, BlittableObjectInstance parent, string name)
+            public BlittablePropertyDescriptor(Engine engine, BlittableJsonReaderObject parent, string name)
             {
                 _engine = engine;
-                _self = parent;
+                Self = parent;
                 _name = name;
 
                 Get = new BlittableGetterFunctionInstance(engine, parent, name);
@@ -90,32 +90,54 @@ namespace Raven.Server.Documents.Patch
                             return new JsValue(((LazyStringValue)propertyDetails.Value).ToString());
                         case BlittableJsonToken.CompressedString:
                             return new JsValue(((LazyCompressedStringValue)propertyDetails.Value).ToString());
-
                         case BlittableJsonToken.StartObject:
-                            new BlittableObjectInstance(Engine, (BlittableJsonReaderObject)propertyDetails.Value);                            
+                            return new BlittableObjectInstance(Engine, (BlittableJsonReaderObject)propertyDetails.Value);                            
                         case BlittableJsonToken.StartArray:
-                            return ToJsArray(engine, (BlittableJsonReaderArray)value, propertyKey);
-
+                            return new BlittableObjectArrayInstance(Engine, (BlittableJsonReaderArray)propertyDetails.Value);
                         default:
-                            throw new ArgumentOutOfRangeException(token.ToString());
+                            throw new ArgumentOutOfRangeException(propertyDetails.Token.ToString());
                     }
                 }
             }
 
             public class BlittableSetterFunctionInstance : FunctionInstance
             {
-                private BlittableObjectInstance parent;
-                private string name;
+                private BlittableJsonReaderObject _parent;
+                private string _name;
                 
-                public BlittableSetterFunctionInstance(Engine engine, BlittableObjectInstance parent, string name) : base(engine, null, null, false)
+                public BlittableSetterFunctionInstance(Engine engine, BlittableJsonReaderObject parent, string name) : base(engine, null, null, false)
                 {
-                    this.parent = parent;
-                    this.name = name;
+                    this._parent = parent;
+                    this._name = name;
                 }
 
                 public override JsValue Call(JsValue thisObject, JsValue[] arguments)
                 {
-                    throw new NotImplementedException();
+                    var newVal = arguments[0];
+                    if (newVal.TryCast<FunctionInstance>() != null)
+                    {
+                        throw new ArgumentException("Can't set a function to a blittable");
+                    }
+
+                    BlittableJsonToken? token = null;
+                    object originalValue = null;
+                    if (_parent.Modifications == null)
+                        _parent.Modifications = new DynamicJsonValue();
+
+                    var propertyIndex = _parent.GetPropertyIndex(_name);
+
+                    
+                    if (propertyIndex != -1)
+                    {
+                        // todo: instead of removal, implement something more appropriate like "substitutions"                        
+                        var details = new BlittableJsonReaderObject.PropertyDetails();
+                        _parent.GetPropertyByIndex(propertyIndex, ref details);
+                        token = details.Token;
+                        originalValue = details.Value;
+                    }
+
+                    // todo: not sure that string.Empty here works fine
+                    _parent.Modifications[_name]= BlittableOjectInstanceOperationScope.ToBlittableValue(newVal, string.Empty, true, token, originalValue);
 
                     return Null.Instance;
                 }
