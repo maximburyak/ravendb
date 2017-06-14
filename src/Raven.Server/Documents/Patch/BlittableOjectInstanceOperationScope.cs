@@ -7,6 +7,7 @@ using System.Runtime.CompilerServices;
 using Jint.Native.Object;
 using Jint.Native;
 using Sparrow.Json;
+using System.Linq;
 
 namespace Raven.Server.Documents.Patch
 {
@@ -64,16 +65,15 @@ namespace Raven.Server.Documents.Patch
             if (v.IsNumber())
             {
                 var num = v.AsNumber();
-
-                KeyValuePair<object, JsValue> property;
-                if (token.HasValue && (
-                    (token.Value & BlittableJsonToken.Float) == BlittableJsonToken.Float) ||
-                    (token.Value & BlittableJsonToken.Float) == BlittableJsonToken.Integer)                    
+                                
+                if (originalValue!= null && token!= null && token.HasValue && (
+                    (token.Value & BlittableJsonToken.Float) == BlittableJsonToken.Float ||
+                    (token.Value & BlittableJsonToken.Integer) == BlittableJsonToken.Integer))
                 {                
                     // If the current value is exactly as the original value, we can return the original value before we made the JS conversion, 
                     // which will convert a Int64 to jsFloat.
-                    var jsValue = property.Value;
-                    if (jsValue.IsNumber() && Math.Abs(num - jsValue.AsNumber()) < double.Epsilon)
+                    
+                    if (Math.Abs(num - Convert.ToDouble(originalValue)) < double.Epsilon)
                         return originalValue;
 
                     //We might have change the type of num from Integer to long in the script by design 
@@ -91,14 +91,10 @@ namespace Raven.Server.Documents.Patch
             }
             if (v.IsNull() || v.IsUndefined())
                 return null;
+
             if (v.IsArray())
             {
                 var blittableArrayInstance = v.TryCast<BlittableObjectArrayInstance>();
-
-                if (blittableArrayInstance != null)
-                {
-                    return blittableArrayInstance.Self;
-                }
 
                 var jsArray = v.AsArray();
                 var array = new DynamicJsonArray();
@@ -112,7 +108,17 @@ namespace Raven.Server.Documents.Patch
                     if (jsInstance == null)
                         continue;
 
-                    var ravenJToken = ToBlittableValue(jsInstance, propertyKey + "[" + property.Key + "]", recursiveCall);
+                    object ravenJToken = null;
+                    if (blittableArrayInstance != null && Int32.TryParse(property.Key, out var keyAsInt))
+                    {
+                        var tuple = blittableArrayInstance.Blittable.GetValueTokenTupleByIndex(keyAsInt);
+                        ravenJToken = ToBlittableValue(jsInstance, propertyKey + "[" + property.Key + "]", recursiveCall, tuple.Item2, tuple.Item1);
+                    }
+                    else
+                    {
+                        ravenJToken = ToBlittableValue(jsInstance, propertyKey + "[" + property.Key + "]", recursiveCall);                        
+                    }
+
                     if (ravenJToken == null)
                         continue;
 
@@ -126,9 +132,8 @@ namespace Raven.Server.Documents.Patch
                 return v.AsDate().ToDateTime();
             }
             if (v.IsObject())
-            {
-                var blittableObjectInstance = v.TryCast<BlittableObjectInstance>();
-                return ToBlittable(v.AsObject(), propertyKey, recursiveCall);
+            {                
+                return ToBlittable(v.AsObject());
             }
             if (v.IsRegExp())
                 return null;
@@ -146,6 +151,24 @@ namespace Raven.Server.Documents.Patch
             }
 
             var obj = new DynamicJsonValue();
+
+            // todo: maybe treat modifications here?
+            
+            BlittableObjectInstance blittableObjectInstace = null;
+
+            blittableObjectInstace = jsObject as BlittableObjectInstance;
+
+            if (blittableObjectInstace != null)
+            {
+                foreach(var propertyIndex in blittableObjectInstace.Blittable.GetPropertiesByInsertionOrder())
+                {
+                    var prop = new BlittableJsonReaderObject.PropertyDetails();
+
+                    blittableObjectInstace.Blittable.GetPropertyByIndex(propertyIndex, ref prop, false);
+                    obj[prop.Name] = prop.Value;
+                }
+            }
+
             foreach (var property in jsObject.GetOwnProperties())
             {
                 if (ShouldFilterProperty(property.Key))
@@ -162,10 +185,22 @@ namespace Raven.Server.Documents.Patch
                 if (recursiveCall && recursive)
                     obj[property.Key] = null;
                 else
-                {
-                    obj[property.Key] = ToBlittableValue(value, CreatePropertyKey(property.Key, propertyKey), recursive);
+                {                        
+                    var propertyIndexInBlittable = blittableObjectInstace?.Blittable.GetPropertyIndex(property.Key)??-1;
+
+                    if (propertyIndexInBlittable < 0)
+                    {
+                        obj[property.Key] = ToBlittableValue(value, CreatePropertyKey(property.Key, propertyKey), recursive);
+                    }
+                    else
+                    {
+                        var prop = new BlittableJsonReaderObject.PropertyDetails();
+                        blittableObjectInstace.Blittable.GetPropertyByIndex(propertyIndexInBlittable, ref prop, true);
+                        obj[property.Key] = ToBlittableValue(value, CreatePropertyKey(property.Key, propertyKey), recursive, prop.Token, prop.Value);
+                    }
                 }
             }
+            
             return obj;
         }
 

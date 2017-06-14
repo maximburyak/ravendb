@@ -1,9 +1,11 @@
 ﻿using Jint;
 using Jint.Native;
+using Jint.Native.Array;
 using Jint.Native.Function;
 using Jint.Native.Object;
 using Jint.Runtime;
 using Jint.Runtime.Descriptors;
+
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
 using System;
@@ -13,20 +15,21 @@ using System.Text;
 
 namespace Raven.Server.Documents.Patch
 {
-    public class BlittableObjectArrayInstance : ObjectInstance
+    public class BlittableObjectArrayInstance : ArrayInstance
     {
-        public readonly BlittableJsonReaderArray Self;
+        public readonly BlittableJsonReaderArray Blittable;
         private readonly Engine _engine;
         private IDictionary<uint, PropertyDescriptor> _array = new MruPropertyCache2<uint, PropertyDescriptor>();
+        public Dictionary<int, (bool isDeleted, int index, JsValue value)> Modifications;
         private PropertyDescriptor _length;
 
-        public BlittableObjectArrayInstance(Engine engine, BlittableJsonReaderArray self) : base(engine)
+        public BlittableObjectArrayInstance(Engine engine, BlittableJsonReaderArray blittable) : base(engine)
         {
-            Self = self;
-            
+            Blittable = blittable;
+            _engine = engine;
             SetOwnProperty("length", new PropertyDescriptor
             {
-                Value = new JsValue(Self.Length),
+                Value = new JsValue(blittable.Length),
                 Configurable = true,
                 Enumerable = true,
                 Writable = true,
@@ -35,13 +38,61 @@ namespace Raven.Server.Documents.Patch
             Prototype = engine.Array.Prototype;
             SetOwnProperty("prototype", new PropertyDescriptor(Prototype, false, false, false));
 
-            
-            for (var i=0; i< self.Length; i++)
+
+            for (var i = 0; i < Blittable.Length; i++)
             {
                 var indexAsString = i.ToString();
-                BlittablePropertyDescriptor blittablePropertyDescriptor 
-                    = new BlittablePropertyDescriptor(Engine, self, i);
-                Put(indexAsString, blittablePropertyDescriptor, true);                
+                BlittablePropertyDescriptor blittablePropertyDescriptor
+                    = new BlittablePropertyDescriptor(Engine, this, i);
+                SetOwnProperty(indexAsString, blittablePropertyDescriptor);
+            }
+        }
+
+        //public static bool IsArrayIndex(JsValue p, out uint index)
+        //{
+        //    index = ParseArrayIndex(TypeConverter.ToString(p));
+
+        //    return index != uint.MaxValue;
+
+        //    // 15.4 - Use an optimized version of the specification
+        //    // return TypeConverter.ToString(index) == TypeConverter.ToString(p) && index != uint.MaxValue;
+        //}
+
+        public void PersistModifications()
+        {
+            if (Modifications == null)
+                return;
+
+            if (Blittable.Modifications == null)
+            {
+                Blittable.Modifications = new DynamicJsonArray();
+            }
+
+            for (var i = 0; i < Blittable.Length; i++)
+            {
+                Blittable.Modifications.RemoveAt(i);
+            }
+
+            for (var i = 0; i < Blittable.Length; i++)
+            {
+                if (Modifications.TryGetValue(i, out var tuple))
+                {
+                    if (tuple.isDeleted)
+                        continue;
+
+                }
+                else
+                {
+                    Blittable.Modifications.Add(Blittable[i]);
+                }
+            }
+
+            if (_array.Count > Blittable.Length)
+            {
+                for (var i = Blittable.Length; i < _array.Count; i++)
+                {
+                    Blittable.Modifications.Add(Modifications[i].value);
+                }
             }
         }
 
@@ -71,7 +122,7 @@ namespace Raven.Server.Documents.Patch
             var ownDesc = GetOwnProperty(propertyName);
 
             if (ownDesc.IsDataDescriptor())
-            {                
+            {
                 DefineOwnProperty(propertyName, valueDesc, throwOnError);
                 return;
             }
@@ -82,10 +133,10 @@ namespace Raven.Server.Documents.Patch
             if (desc.IsAccessorDescriptor())
             {
                 var setter = desc.Set.TryCast<ICallable>();
-                setter.Call(new JsValue(this), new[] { valueDesc.Get.TryCast<ICallable>().Call(new JsValue(this),null)});
+                setter.Call(new JsValue(this), new[] { valueDesc.Get.TryCast<ICallable>().Call(new JsValue(this), null) });
             }
             else
-            {                
+            {
                 DefineOwnProperty(propertyName, valueDesc, throwOnError);
             }
         }
@@ -109,7 +160,8 @@ namespace Raven.Server.Documents.Patch
             IsArrayIndex(propertyName, out var index);
             if (ownDesc.IsDataDescriptor())
             {
-                var valueDesc = new BlittablePropertyDescriptor(Engine,Self, (int)index, value: value, writable: null, enumerable: null, configurable: null);
+                var valueDesc = new BlittablePropertyDescriptor(Engine, this, (int)index);
+                valueDesc.SetValue(value);
                 DefineOwnProperty(propertyName, valueDesc, throwOnError);
                 return;
             }
@@ -124,7 +176,7 @@ namespace Raven.Server.Documents.Patch
             }
             else
             {
-                var newDesc = new BlittablePropertyDescriptor(Engine, Self, (int)index, value, true, true, true);
+                var newDesc = new BlittablePropertyDescriptor(Engine, this, (int)index, value, true, true, true);
                 DefineOwnProperty(propertyName, newDesc, throwOnError);
             }
         }
@@ -269,7 +321,7 @@ namespace Raven.Server.Documents.Patch
                     oldLenDesc.Value = index + 1;
                     base.DefineOwnProperty("length", _length = oldLenDesc, false);
                 }
-                
+
                 return true;
             }
 
@@ -317,7 +369,7 @@ namespace Raven.Server.Documents.Patch
         {
             uint index;
             if (IsArrayIndex(propertyName, out index))
-            {              
+            {
                 _array[index] = desc;
             }
             else
@@ -342,38 +394,19 @@ namespace Raven.Server.Documents.Patch
             return base.HasOwnProperty(p);
         }
 
-        private DynamicJsonArray Modifications
-        {
-            get
-            {
-                if (Self.Modifications == null)
-                {
-                    Self.Modifications = new DynamicJsonArray();
-                }
-                return Self.Modifications;
-            }
-        }
-
         public override void RemoveOwnProperty(string p)
         {
             uint index;
             if (IsArrayIndex(p, out index))
             {
                 _array.Remove(index);
-                Modifications.RemoveAt((int)index);
+                if (Modifications == null)
+                    Modifications = new Dictionary<int, (bool isDeleted, int index, JsValue value)>();
+
+                Modifications[(int)index] = (true, (int)index, null);
             }
 
             base.RemoveOwnProperty(p);
-        }
-
-        public static bool IsArrayIndex(JsValue p, out uint index)
-        {
-            index = ParseArrayIndex(TypeConverter.ToString(p));
-
-            return index != uint.MaxValue;
-
-            // 15.4 - Use an optimized version of the specification
-            // return TypeConverter.ToString(index) == TypeConverter.ToString(p) && index != uint.MaxValue;
         }
 
         internal static uint ParseArrayIndex(string p)
@@ -420,118 +453,137 @@ namespace Raven.Server.Documents.Patch
         public class BlittablePropertyDescriptor : PropertyDescriptor
         {
             private Engine _engine;
-            private BlittableJsonReaderArray _self;
             private int _index;
-            private BlittableGetterFunctionInstance _get;
-            private BlittableSetterFunctionInstance _set;
-            private object _value;
+            public JsValue LastKnownValue { get; set; }
+            private BlittableObjectArrayInstance _parent;
 
-            public BlittablePropertyDescriptor(Engine engine, BlittableJsonReaderArray parent, int index)
+            public BlittablePropertyDescriptor(Engine engine, BlittableObjectArrayInstance parent, int index)
             {
                 _engine = engine;
-                _self = parent;
-                this._index = index;
-
-
-                // todo: cleanup code here, pretty sure we won't need the _get and _set fields
-                _get = new BlittableGetterFunctionInstance(engine, parent, index);
-                Get = this._get;
-                _set = new BlittableSetterFunctionInstance(engine, parent, index);
-                Set = _set;
+                _index = index;
+                _parent = parent;
+                // todo: cleanup code here, pretty sure we won't need the _get and _set fields                
+                Get = new BlittableGetterFunctionInstance(engine, this, index);
+                Set = new BlittableSetterFunctionInstance(engine, this, index);
+                this.Writable = true;
             }
 
-            public BlittablePropertyDescriptor(Engine engine, BlittableJsonReaderArray parent, int index,JsValue value, bool? writable, bool? enumerable, bool? configurable) : base(value, writable, enumerable, configurable)
+            public BlittablePropertyDescriptor(Engine engine, BlittableObjectArrayInstance parent, int index, JsValue value, bool? writable, bool? enumerable, bool? configurable) : base(value, writable, enumerable, configurable)
             {
-                Get = new BlittableGetterFunctionInstance(engine, parent, index);
-                Set = new BlittableSetterFunctionInstance(engine, parent, index);
-            }        
+                _parent = parent;
+                Get = new BlittableGetterFunctionInstance(engine, this, index);
+                Set = new BlittableSetterFunctionInstance(engine, this, index);
+                this.Writable = true;
+            }
+
+            public override JsValue Value
+            {
+                get
+                {
+                    LastKnownValue = GetValue();
+                    return LastKnownValue;
+                }
+                set
+                {
+                    SetValue(value);
+                }
+            }
+
+            private JsValue GetValue()
+            {
+                if (LastKnownValue != null)
+                    return LastKnownValue;
+
+                if (_parent.Modifications != null && _parent.Modifications.TryGetValue(_index, out var val))
+                {
+                    if (val.isDeleted)
+                        return JsValue.Undefined;
+                    return val.value;
+                }
+
+                var valueTuple = _parent.Blittable.GetValueTokenTupleByIndex(_index);
+
+                switch (valueTuple.Item2 & BlittableJsonReaderBase.TypesMask)
+                {
+                    case BlittableJsonToken.Null:
+                        return JsValue.Null;
+                    case BlittableJsonToken.Boolean:
+                        return new JsValue((bool)valueTuple.Item1);
+
+                    case BlittableJsonToken.Integer:
+                        return new JsValue((long)valueTuple.Item1);
+                    case BlittableJsonToken.Float:
+                        return new JsValue((double)(LazyDoubleValue)valueTuple.Item1);
+                    case BlittableJsonToken.String:
+                        return new JsValue(((LazyStringValue)valueTuple.Item1).ToString());
+                    case BlittableJsonToken.CompressedString:
+                        return new JsValue(((LazyCompressedStringValue)valueTuple.Item1).ToString());
+
+                    case BlittableJsonToken.StartObject:
+                        return new BlittableObjectInstance(_engine, (BlittableJsonReaderObject)valueTuple.Item1);
+                    case BlittableJsonToken.StartArray:
+                        Enumerable = true;
+                        return new BlittableObjectArrayInstance(_engine, (BlittableJsonReaderArray)valueTuple.Item1);
+                    default:
+                        return JsValue.Undefined;
+                }
+            }
+
+            public void SetValue(JsValue newVal)
+            {
+                if (newVal.TryCast<FunctionInstance>() != null)
+                {
+                    throw new ArgumentException("Can't set a function to a blittable");
+                }
+
+                if (_parent.Modifications == null)
+                    _parent.Modifications = new Dictionary<int, (bool isDeleted, int index, JsValue value)>();
+
+                // todo: not sure that string.Empty here works fine
+                //_parent.Modifications[_index] = (false, _index, BlittableOjectInstanceOperationScope.ToBlittableValue(newVal, string.Empty, true, token, originalValue));
+                _parent.Modifications[_index] = (false, _index, newVal);
+                Enumerable = newVal.IsArray() || newVal.IsObject();
+                LastKnownValue = newVal;
+            }
 
             public class BlittableGetterFunctionInstance : FunctionInstance
             {
-                private BlittableJsonReaderArray parent;
                 private int _index;
+                private BlittablePropertyDescriptor _descriptor;
 
-                public BlittableGetterFunctionInstance(Engine engine, BlittableJsonReaderArray parent, int index) : base(engine, null, null, false)
+                public BlittableGetterFunctionInstance(Engine engine, BlittablePropertyDescriptor descriptor, int index) : base(engine, null, null, false)
                 {
-                    this.parent = parent;
                     this._index = index;
+                    _descriptor = descriptor;
                 }
 
                 public override JsValue Call(JsValue thisObject, JsValue[] arguments)
                 {
                     if (_index == -1)
                         return JsValue.Undefined;
-                    
-                    var valueTuple = parent.GetValueTokenTupleByIndex(_index);
-                                        
-                    switch (valueTuple.Item2 & BlittableJsonReaderBase.TypesMask)
-                    {
-                        case BlittableJsonToken.Null:
-                            return JsValue.Null;
-                        case BlittableJsonToken.Boolean:
-                            return new JsValue((bool)valueTuple.Item1);
-
-                        case BlittableJsonToken.Integer:
-                            return new JsValue((long)valueTuple.Item1);
-                        case BlittableJsonToken.Float:
-                            return new JsValue((double)(LazyDoubleValue)valueTuple.Item1);
-                        case BlittableJsonToken.String:
-                            return new JsValue(((LazyStringValue)valueTuple.Item1).ToString());
-                        case BlittableJsonToken.CompressedString:
-                            return new JsValue(((LazyCompressedStringValue)valueTuple.Item1).ToString());
-
-                        case BlittableJsonToken.StartObject:
-                            return new BlittableObjectInstance(Engine, (BlittableJsonReaderObject)valueTuple.Item1);
-                        case BlittableJsonToken.StartArray:
-                            return new BlittableObjectArrayInstance(Engine, (BlittableJsonReaderArray)valueTuple.Item1);
-
-                        default:
-                            return JsValue.Undefined;
-                    }
+                    return _descriptor.GetValue();
                 }
             }
 
             public class BlittableSetterFunctionInstance : FunctionInstance
             {
-                private BlittableJsonReaderArray _parent;
                 private int _index;
+                private BlittablePropertyDescriptor _descriptor;
 
-                public BlittableSetterFunctionInstance(Engine engine, BlittableJsonReaderArray parent, int index) : base(engine, null, null, false)
+                public BlittableSetterFunctionInstance(Engine engine, BlittablePropertyDescriptor descriptor, int index) : base(engine, null, null, false)
                 {
-                    this._parent = parent;
-                    this._index = index;                    
+                    _index = index;
+                    _descriptor = descriptor;
                 }
 
                 public override JsValue Call(JsValue thisObject, JsValue[] arguments)
                 {
                     var newVal = arguments[0];
-                    if (newVal.TryCast<FunctionInstance>() != null)
-                    {
-                        throw new ArgumentException("Can't set a function to a blittable");
-                    }
-
-                    BlittableJsonToken? token = null;
-                    object originalValue = null;
-
-                    if (_parent.Modifications == null)
-                        _parent.Modifications = new DynamicJsonArray();
-
-                    if (_index < _parent.Length)
-                    {
-                        // todo: instead of removal, implement something more appropriate like "substitutions"
-                        _parent.Modifications.Removals.Add(_index);
-                        var valueToken = _parent.GetValueTokenTupleByIndex(_index);
-                        token = valueToken.Item2;
-                        originalValue = valueToken.Item1;
-                    }
-                    
-
-
-                    // todo: not sure that string.Empty here works fine
-                    _parent.Modifications.Add(BlittableOjectInstanceOperationScope.ToBlittableValue(newVal, string.Empty, true, token, originalValue));
-                    
+                    _descriptor.SetValue(newVal);
                     return Null.Instance;
                 }
+
+
             }
         }
 
