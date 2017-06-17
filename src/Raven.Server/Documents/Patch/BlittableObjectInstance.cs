@@ -12,7 +12,7 @@ using Jint.Native.Array;
 using Jint.Runtime;
 using Sparrow.Json.Parsing;
 using System.Linq;
-
+using Sparrow.Collections;
 
 namespace Raven.Server.Documents.Patch
 {
@@ -20,8 +20,9 @@ namespace Raven.Server.Documents.Patch
 
     public class BlittableObjectInstance : ObjectInstance
     {
+        public string Id;
         public readonly BlittableJsonReaderObject Blittable;
-        public Dictionary<string, (bool isDeleted, JsValue value)> Modifications;
+        public List<(string name, bool isDeleted, JsValue value)> Modifications;
 
         public BlittableObjectInstance(Engine engine, BlittableJsonReaderObject parent) : base(engine)
         {
@@ -40,28 +41,10 @@ namespace Raven.Server.Documents.Patch
 
         public override void RemoveOwnProperty(string p)
         {
-            Modifications[p] = (true, null);
+            Modifications.Add((p,true, null));
             base.RemoveOwnProperty(p);
         }
 
-        public void PersistModifications()
-        {
-            if (Modifications == null)
-                return;
-
-            if (Blittable.Modifications == null)
-            {
-                Blittable.Modifications = new DynamicJsonValue();
-            }
-
-            foreach (var modificationKvp in Modifications)
-            {
-                if (modificationKvp.Value.isDeleted)
-                    Blittable.Modifications.Remove(modificationKvp.Key);
-                else
-                    Blittable.Modifications[modificationKvp.Key] = modificationKvp.Value;
-            }
-        }
 
         public class BlittablePropertyDescriptor : PropertyDescriptor
         {
@@ -76,10 +59,26 @@ namespace Raven.Server.Documents.Patch
                 Self = self;
                 _name = name;
 
-                Get = new BlittableGetterFunctionInstance(engine, this, name);
+               // Get = new BlittableGetterFunctionInstance(engine, this, name);
                 Set = new BlittableSetterFunctionInstance(engine, this, name);
                 Writable = true;
 
+            }
+
+            private JsValue _get;
+    //        private JsValue _set;
+
+            public new JsValue Get {
+                get
+                {
+                    if (_get == null)
+                        _get = new BlittableGetterFunctionInstance(_engine, this, _name);
+                    return _get;
+                }
+                set
+                {
+                    _get = value;
+                }
             }
 
             public override JsValue Value
@@ -99,13 +98,16 @@ namespace Raven.Server.Documents.Patch
             {
                 if (LastKnownValue != null)
                     return LastKnownValue;
-
-                if (Self.Modifications != null && Self.Modifications.TryGetValue(_name, out var valTuple))
+                                
+                foreach (var item in Self.Modifications)
                 {
-                    if (valTuple.isDeleted)
-                        return JsValue.Undefined;
-                    return valTuple.value;
-                }
+                    if (item.name == _name)
+                    {
+                        if (item.isDeleted)
+                            return JsValue.Undefined;
+                        return item.value;
+                    }
+                }                
 
                 var propertyIndex = Self.Blittable.GetPropertyIndex(_name);
                 if (propertyIndex == -1)
@@ -148,13 +150,13 @@ namespace Raven.Server.Documents.Patch
                 }
 
                 if (Self.Modifications == null)
-                    Self.Modifications = new Dictionary<string, (bool, JsValue)>();
+                    Self.Modifications = new List<(string, bool, JsValue)>();
 
                 //BlittableOjectInstanceOperationScope.ToBlittableValue(newVal, string.Empty, true, token, originalValue)
                 // todo: not sure that string.Empty here works fine
                 LastKnownValue = newVal;
                 Enumerable = newVal.IsArray() || newVal.IsObject();
-                Self.Modifications[_name] = (false, newVal);
+                Self.Modifications.Add((_name,false, newVal));
             }
 
             public class BlittableGetterFunctionInstance : FunctionInstance
