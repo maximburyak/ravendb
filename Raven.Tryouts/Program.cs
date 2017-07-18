@@ -11,21 +11,174 @@ using Raven.Abstractions.Replication;
 using Raven.Client;
 using Raven.Client.Changes;
 using Raven.Client.Document;
+using Raven.Database.Config;
 using Raven.Json.Linq;
+using Raven.Server;
 using Raven.Tests.Bugs;
+using Raven.Tests.Common;
 using Raven.Tests.Core.Replication;
+using Raven.Tests.Helpers;
 using Raven.Tests.Issues;
 using Xunit;
 
 namespace Tryouts
 {
 
-    public class ReplicationTest : RavenReplicationCoreTest
+    public class ReplicationTest : ReplicationBase
     {
+        private const int TestDuration = 600000;
         
-        public void can_reset_index_with_replication()
+        public void CanChangeClientRejectModeOnFailoverNode()
         {
+            pathsToDelete.Add("~/Databases");
             
+            using (var source = CreateStore(runInMemory:false))
+            using (var destination = CreateStore(runInMemory: false))
+            {
+                
+                Console.WriteLine(source.Url);
+                Console.WriteLine(destination.Url);
+                
+                source.DatabaseCommands.Put(Constants.RavenReplicationDestinations,
+                    null, new RavenJObject
+                    {
+                        {
+                            "Destinations", new RavenJArray(new []
+                            {
+                                new RavenJObject
+                                {
+                                    { "Url", destination.Url },
+                                    { "Database", destination.DefaultDatabase }
+                                }
+                            }.ToList())
+                        },
+                        {
+                            "ClientConfiguration", new RavenJObject
+                            {
+                                { "FailoverBehavior", "ReadFromAllServers"}
+                            }
+                        }
+                    }, new RavenJObject());
+
+
+                //destination.DatabaseCommands.Put(Constants.RavenReplicationDestinations,
+                //    null, new RavenJObject
+                //    {
+                //        {
+                //            "ClientConfiguration", new RavenJObject
+                //            {
+                //                { "FailoverBehavior", "ReadFromAllServers"}
+                //            }
+                //        }
+                //    }, new RavenJObject());
+
+
+                var shouldSend = true;
+
+
+                var count = 0;
+                var requestsTask = Task.Run(async () =>
+                {
+                    var sp = Stopwatch.StartNew();
+
+                    while (sp.ElapsedMilliseconds < TestDuration)
+                    {
+                        if (shouldSend == false)
+                        {
+                            await Task.Delay(500);
+                            continue;
+                        }
+                        using (var session = source.OpenSession())
+                        {
+                            try
+                            {
+                                session.Store(new User()
+                                {
+                                    Name = "Vasia"
+                                });
+                                session.SaveChanges();
+                                count = session.Query<User>().Count();
+                            }
+                            catch (Exception e)
+                            {
+                                Console.WriteLine("Error");
+                                Console.WriteLine(e);
+                            }
+                        }
+                    }
+                });
+
+
+                var shouldToggle = false;
+                
+
+                var rejectClientModeTask = Task.Run(async () =>
+                {
+                    var stores = new[] { source, destination };
+                    var toggleCounter = 0;
+                    var sp = Stopwatch.StartNew();
+
+                    while (sp.ElapsedMilliseconds < TestDuration)
+                    {
+                        if (shouldToggle == false)
+                        {
+                            await Task.Delay(500);
+                            continue;
+                        }
+                        toggleCounter++;
+                        var curStore = stores[toggleCounter % 2];
+                        using (var request = curStore.DatabaseCommands.ForSystemDatabase().CreateRequest("/admin/databases-toggle-reject-clients?id=" + source.DefaultDatabase + "&isRejectClientsEnabled=true", "POST"))
+                        {
+                            try
+                            {
+                                request.ExecuteRequest();
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine(ex);
+                            }
+                        }
+                            await Task.Delay(5000);
+                        using (var request = curStore.DatabaseCommands.ForSystemDatabase().CreateRequest("/admin/databases-toggle-reject-clients?id=" + source.DefaultDatabase + "&isRejectClientsEnabled=false", "POST"))
+                        {
+                            try
+                            {
+                                request.ExecuteRequest();
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine(ex);
+                            }
+                        }
+                    }
+                });
+
+                var shouldToggleTask = Task.Run(() =>
+                {
+                    ConsoleKeyInfo key;
+                    do
+                    {
+                        key = Console.ReadKey();
+                        if (key.Key == ConsoleKey.T)
+                            shouldToggle = !shouldToggle;
+                    } while (key.Key != ConsoleKey.Escape);
+                });
+                
+
+                var shouldSendTask = Task.Run(() =>
+                {
+                    ConsoleKeyInfo key;
+                    do
+                    {
+                        key = Console.ReadKey();
+                        if (key.Key == ConsoleKey.S)
+                            shouldSend = !shouldSend;
+                    } while (key.Key != ConsoleKey.Escape);
+                });
+
+
+                Task.WaitAll(new[] {requestsTask, rejectClientModeTask, shouldToggleTask, shouldSendTask });
+            }
         }
     }
     public class Program
@@ -39,27 +192,7 @@ namespace Tryouts
 
         public static void Main(string[] args)
         {
-            int choice = 0;
-            TestASync();
-            //if (args.Length == 1)
-            //{
-            //    int.TryParse(args[0], out choice);
-            //}
-            //switch (choice)
-            //{
-            //    case 0:
-            //        TestSync();
-            //        break;
-            //    case 1:
-            //        TestASync();
-            //        break;
-            //    case 2:
-            //        TestASyncSafer();
-            //        break;
-            //    default:
-            //        TestSync();
-            //        break;
-            //}
+           new ReplicationTest().CanChangeClientRejectModeOnFailoverNode();
         }
 
         private static void TestASyncSafer()
