@@ -74,8 +74,16 @@ namespace Voron.Data.Tables
             }
 #endif
             var tvr = new TableValueReader(data, size);
-            DeleteValueFromIndex(previousId, ref tvr);
-            InsertIndexValuesFor(newId, ref tvr);
+            AssertValidTable();
+            try
+            {
+                DeleteValueFromIndex(previousId, ref tvr);
+                InsertIndexValuesFor(newId, ref tvr);
+            }
+            finally
+            {
+                AssertValidTable();
+            }
         }
 
         /// <summary>
@@ -196,67 +204,75 @@ namespace Voron.Data.Tables
 
         public long Update(long id, TableValueBuilder builder, bool forceUpdate = false)
         {
-            AssertWritableTable();
-
-            // The ids returned from this function MUST NOT be stored outside of the transaction.
-            // These are merely for manipulation within the same transaction, and WILL CHANGE afterwards.
-            int size = builder.Size;
-
-            // first, try to fit in place, either in small or large sections
-            var prevIsSmall = id % Constants.Storage.PageSize != 0;
-            if (size + sizeof(RawDataSection.RawDataEntrySizes) < RawDataSection.MaxItemSize)
+            AssertValidTable();
+            try
             {
-                // We must read before we call TryWriteDirect, because it will modify the size
-                int oldDataSize;
-                var oldData = DirectRead(id, out oldDataSize);
+                AssertWritableTable();
 
-                AssertNoReferenceToOldData(builder, oldData, oldDataSize);
+                // The ids returned from this function MUST NOT be stored outside of the transaction.
+                // These are merely for manipulation within the same transaction, and WILL CHANGE afterwards.
+                int size = builder.Size;
 
-                byte* pos;
-                if (prevIsSmall && ActiveDataSmallSection.TryWriteDirect(id, size, out pos))
+                // first, try to fit in place, either in small or large sections
+                var prevIsSmall = id % Constants.Storage.PageSize != 0;
+                if (size + sizeof(RawDataSection.RawDataEntrySizes) < RawDataSection.MaxItemSize)
                 {
-                    var tvr = new TableValueReader(oldData, oldDataSize);
-                    UpdateValuesFromIndex(id,
-                        ref tvr,
-                        builder, 
-                        forceUpdate);
+                    // We must read before we call TryWriteDirect, because it will modify the size
+                    int oldDataSize;
+                    var oldData = DirectRead(id, out oldDataSize);
 
-                    builder.CopyTo(pos);
-                    return id;
+                    AssertNoReferenceToOldData(builder, oldData, oldDataSize);
+
+                    byte* pos;
+                    if (prevIsSmall && ActiveDataSmallSection.TryWriteDirect(id, size, out pos))
+                    {
+                        var tvr = new TableValueReader(oldData, oldDataSize);
+                        UpdateValuesFromIndex(id,
+                            ref tvr,
+                            builder,
+                            forceUpdate);
+
+                        builder.CopyTo(pos);
+                        return id;
+                    }
                 }
+                else if (prevIsSmall == false)
+                {
+                    var pageNumber = id / Constants.Storage.PageSize;
+                    var page = _tx.LowLevelTransaction.GetPage(pageNumber);
+                    var existingNumberOfPages = VirtualPagerLegacyExtensions.GetNumberOfOverflowPages(page.OverflowSize);
+                    var newNumberOfPages = VirtualPagerLegacyExtensions.GetNumberOfOverflowPages(size);
+
+                    if (existingNumberOfPages == newNumberOfPages)
+                    {
+                        page = _tx.LowLevelTransaction.ModifyPage(pageNumber);
+
+
+                        var pos = page.Pointer + PageHeader.SizeOf;
+
+                        var tvr = new TableValueReader(pos, page.OverflowSize);
+
+                        AssertNoReferenceToOldData(builder, pos, size);
+
+                        UpdateValuesFromIndex(id, ref tvr, builder, forceUpdate);
+
+                        // MemoryCopy into final position.
+                        page.OverflowSize = size;
+
+                        builder.CopyTo(pos);
+
+                        return id;
+                    }
+                }
+
+                // can't fit in place, will just delete & insert instead
+                Delete(id);
+                return Insert(builder);
             }
-            else if (prevIsSmall == false)
+            finally
             {
-                var pageNumber = id / Constants.Storage.PageSize;
-                var page = _tx.LowLevelTransaction.GetPage(pageNumber);
-                var existingNumberOfPages = VirtualPagerLegacyExtensions.GetNumberOfOverflowPages(page.OverflowSize);
-                var newNumberOfPages = VirtualPagerLegacyExtensions.GetNumberOfOverflowPages(size);
-
-                if (existingNumberOfPages == newNumberOfPages)
-                {
-                    page = _tx.LowLevelTransaction.ModifyPage(pageNumber);
-
-
-                    var pos = page.Pointer + PageHeader.SizeOf;
-
-                    var tvr = new TableValueReader(pos, page.OverflowSize);
-
-                    AssertNoReferenceToOldData(builder, pos, size);
-
-                    UpdateValuesFromIndex(id, ref tvr, builder, forceUpdate);
-
-                    // MemoryCopy into final position.
-                    page.OverflowSize = size;
-
-                    builder.CopyTo(pos);
-
-                    return id;
-                }
+                AssertValidTable();
             }
-
-            // can't fit in place, will just delete & insert instead
-            Delete(id);
-            return Insert(builder);
         }
 
         [Conditional("DEBUG")]
@@ -397,7 +413,10 @@ namespace Voron.Data.Tables
                 using (indexDef.GetSlice(_tx.Allocator, ref value, out Slice val))
                 {
                     var fst = GetFixedSizeTree(indexTree, val.Clone(_tx.Allocator), 0);
-                    fst.Delete(id);
+                    if (fst.Delete(id).NumberOfEntriesDeleted == 0)
+                    {
+                        ThrowInvalidAttemptToRemoveValueFromIndexAndNotFindingIt(id, indexDef.Name);
+                    }
                 }
             }
 
@@ -405,69 +424,87 @@ namespace Voron.Data.Tables
             {
                 var index = GetFixedSizeTree(indexDef);
                 var key = indexDef.GetValue(ref value);
-                index.Delete(key);
+                if (index.Delete(key).NumberOfEntriesDeleted == 0)
+                {
+                    ThrowInvalidAttemptToRemoveValueFromIndexAndNotFindingIt(id, indexDef.Name);
+                }
             }
+        }
+
+        private void ThrowInvalidAttemptToRemoveValueFromIndexAndNotFindingIt(long id, Slice indexDefName)
+        {
+            throw new InvalidOperationException(
+                $"Invalid index {indexDefName} on {Name}, attempted to delete value but the value from {id} wasn\'t in the index");
         }
 
 
         public long Insert(TableValueBuilder builder)
         {
-            AssertWritableTable();
-
-            // Any changes done to this method should be reproduced in the Insert below, as they're used when compacting.
-            // The ids returned from this function MUST NOT be stored outside of the transaction.
-            // These are merely for manipulation within the same transaction, and WILL CHANGE afterwards.
-
-            var size = builder.Size;
-
-            byte* pos;
-            long id;
-
-            if (size + sizeof(RawDataSection.RawDataEntrySizes) < RawDataSection.MaxItemSize)
+            AssertValidTable();
+            try
             {
-                id = AllocateFromSmallActiveSection(builder,size);
 
-                if (ActiveDataSmallSection.TryWriteDirect(id, size, out pos) == false)
-                    throw new InvalidOperationException(
-                        $"After successfully allocating {size:#,#;;0} bytes, failed to write them on {Name}");
+                AssertWritableTable();
 
-                // Memory Copy into final position.
-                builder.CopyTo(pos);
+                // Any changes done to this method should be reproduced in the Insert below, as they're used when compacting.
+                // The ids returned from this function MUST NOT be stored outside of the transaction.
+                // These are merely for manipulation within the same transaction, and WILL CHANGE afterwards.
+
+                var size = builder.Size;
+
+                byte* pos;
+                long id;
+
+                if (size + sizeof(RawDataSection.RawDataEntrySizes) < RawDataSection.MaxItemSize)
+                {
+                    id = AllocateFromSmallActiveSection(builder, size);
+
+                    if (ActiveDataSmallSection.TryWriteDirect(id, size, out pos) == false)
+                        throw new InvalidOperationException(
+                            $"After successfully allocating {size:#,#;;0} bytes, failed to write them on {Name}");
+
+                    // Memory Copy into final position.
+                    builder.CopyTo(pos);
+                }
+                else
+                {
+                    var numberOfOverflowPages = VirtualPagerLegacyExtensions.GetNumberOfOverflowPages(size);
+                    var page = _tx.LowLevelTransaction.AllocatePage(numberOfOverflowPages);
+                    _overflowPageCount += numberOfOverflowPages;
+
+                    page.Flags = PageFlags.Overflow | PageFlags.RawData;
+                    page.OverflowSize = size;
+
+                    ((RawDataOverflowPageHeader*)page.Pointer)->SectionOwnerHash = ActiveDataSmallSection.SectionOwnerHash;
+                    ((RawDataOverflowPageHeader*)page.Pointer)->TableType = _tableType;
+
+                    pos = page.Pointer + PageHeader.SizeOf;
+
+                    builder.CopyTo(pos);
+
+                    id = page.PageNumber * Constants.Storage.PageSize;
+                }
+
+                var tvr = new TableValueReader(pos, size);
+                InsertIndexValuesFor(id, ref tvr);
+
+                NumberOfEntries++;
+
+                byte* ptr;
+                using (_tableTree.DirectAdd(TableSchema.StatsSlice, sizeof(TableSchemaStats), out ptr))
+                {
+                    var stats = (TableSchemaStats*)ptr;
+
+                    stats->NumberOfEntries = NumberOfEntries;
+                    stats->OverflowPageCount = _overflowPageCount;
+                }
+
+                return id;
             }
-            else
+            finally
             {
-                var numberOfOverflowPages = VirtualPagerLegacyExtensions.GetNumberOfOverflowPages(size);
-                var page = _tx.LowLevelTransaction.AllocatePage(numberOfOverflowPages);
-                _overflowPageCount += numberOfOverflowPages;
-
-                page.Flags = PageFlags.Overflow | PageFlags.RawData;
-                page.OverflowSize = size;
-
-                ((RawDataOverflowPageHeader*)page.Pointer)->SectionOwnerHash = ActiveDataSmallSection.SectionOwnerHash;
-                ((RawDataOverflowPageHeader*)page.Pointer)->TableType = _tableType;
-
-                pos = page.Pointer + PageHeader.SizeOf;
-
-                builder.CopyTo(pos);
-
-                id = page.PageNumber * Constants.Storage.PageSize;
+                AssertValidTable();
             }
-
-            var tvr = new TableValueReader(pos, size);
-            InsertIndexValuesFor(id, ref tvr);
-
-            NumberOfEntries++;
-
-            byte* ptr;
-            using (_tableTree.DirectAdd(TableSchema.StatsSlice, sizeof(TableSchemaStats), out ptr))
-            {
-                var stats = (TableSchemaStats*)ptr;
-
-                stats->NumberOfEntries = NumberOfEntries;
-                stats->OverflowPageCount = _overflowPageCount;
-            }
-
-            return id;
         }
 
         private void UpdateValuesFromIndex(long id, ref TableValueReader oldVer, TableValueBuilder newVer, bool forceUpdate)
@@ -1273,26 +1310,34 @@ namespace Voron.Data.Tables
 
         public bool Set(TableValueBuilder builder, bool forceUpdate = false)
         {
-            AssertWritableTable();
-
-            // The ids returned from this function MUST NOT be stored outside of the transaction.
-            // These are merely for manipulation within the same transaction, and WILL CHANGE afterwards.
-            long id;
-            bool exists;
-
-            using (builder.SliceFromLocation(_tx.Allocator, _schema.Key.StartIndex, out Slice key))
+            AssertValidTable();
+            try
             {
-                exists = TryFindIdFromPrimaryKey(key, out id);
-            }
+                AssertWritableTable();
 
-            if (exists)
+                // The ids returned from this function MUST NOT be stored outside of the transaction.
+                // These are merely for manipulation within the same transaction, and WILL CHANGE afterwards.
+                long id;
+                bool exists;
+
+                using (builder.SliceFromLocation(_tx.Allocator, _schema.Key.StartIndex, out Slice key))
+                {
+                    exists = TryFindIdFromPrimaryKey(key, out id);
+                }
+
+                if (exists)
+                {
+                    Update(id, builder, forceUpdate);
+                    return false;
+                }
+
+                Insert(builder);
+                return true;
+            }
+            finally
             {
-                Update(id, builder, forceUpdate);
-                return false;
+                AssertValidTable();
             }
-
-            Insert(builder);
-            return true;
         }
 
         public int DeleteBackwardFrom(TableSchema.FixedSizeSchemaIndexDef index, long value, long numberOfEntriesToDelete)
