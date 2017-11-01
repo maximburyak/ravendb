@@ -155,6 +155,7 @@ namespace Voron.Impl
 
 
             value = new Table(schema, clonedName, this, tableTree, schema.TableType);
+            value.AssertValidTable();
             _tables[clonedName] = value;
             return value;
         }

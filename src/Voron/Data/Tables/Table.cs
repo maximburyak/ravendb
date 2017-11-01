@@ -616,12 +616,18 @@ namespace Voron.Data.Tables
                 {
                     var index = GetFixedSizeTree(indexDef);
                     long key = indexDef.GetValue(ref value);
-                    index.Add(key, idAsSlice);
+                    if(index.Add(key, idAsSlice) == false)
+                        ThrowInvalidDuplicateFixedSizeTreeKey(key, indexDef);
                 }
             }
         }
 
-        private FixedSizeTree GetFixedSizeTree(TableSchema.FixedSizeSchemaIndexDef indexDef)
+        private void ThrowInvalidDuplicateFixedSizeTreeKey(long key, TableSchema.FixedSizeSchemaIndexDef indexDef)
+        {
+            throw new InvalidOperationException("Attempt to add duplicate value " + key + " to " + indexDef.Name + " on " + Name);
+        }
+
+        public FixedSizeTree GetFixedSizeTree(TableSchema.FixedSizeSchemaIndexDef indexDef)
         {
             if (indexDef.IsGlobal)
                 return _tx.GetGlobalFixedSizeTree(indexDef.Name, sizeof(long), isIndexTree: true, newPageAllocator: _globalPageAllocator);
@@ -1124,6 +1130,22 @@ namespace Voron.Data.Tables
             }
         }
 
+
+        public IEnumerable<(long Key, long Value)> IterateOverEtags(TableSchema.FixedSizeSchemaIndexDef index, long key)
+        {
+            var fst = GetFixedSizeTree(index);
+
+            using (var it = fst.Iterate())
+            {
+                if (it.Seek(key) == false)
+                    yield break;
+                do
+                {
+                    yield return (it.CurrentKey, it.CreateReaderForCurrent().ReadLittleEndianInt64());
+                } while (it.MoveNext());
+            }
+        }
+
         public IEnumerable<TableValueHolder> SeekForwardFrom(TableSchema.FixedSizeSchemaIndexDef index, long key, int skip)
         {
             var fst = GetFixedSizeTree(index);
@@ -1429,6 +1451,8 @@ namespace Voron.Data.Tables
 
         public void PrepareForCommit()
         {
+            AssertValidTable();
+
             if (_treesBySliceCache == null)
                 return;
 
@@ -1448,6 +1472,67 @@ namespace Voron.Data.Tables
                 }
             }
         }
+
+        /// <summary>
+        /// validate all globals indexes has the same number
+        /// validate all local indexes has the same number as the table itself
+        /// </summary>
+        internal void AssertValidTable()
+        {
+            long globalDocsCount = -1;
+            
+            foreach (var fsi in _schema.FixedSizeIndexes)
+            {
+                var indexNumberOfEntries = GetFixedSizeTree(fsi.Value).NumberOfEntries;
+                if (fsi.Value.IsGlobal == false)
+                {
+                    if (NumberOfEntries != indexNumberOfEntries)
+                        throw new InvalidOperationException($"{fsi.Key} count should be {NumberOfEntries} but is {indexNumberOfEntries}");
+                }
+                else
+                {
+                    if (globalDocsCount == -1)
+                        globalDocsCount = indexNumberOfEntries;
+                    else if (globalDocsCount != indexNumberOfEntries)
+                        throw new InvalidOperationException($"{fsi.Key} count is inconsistent, it could be {globalDocsCount} but is {indexNumberOfEntries}");
+                }
+            }
+            //foreach (var fsi in _schema.Indexes)
+            //{
+            //    var indexNumberOfEntries = GetTree(fsi.Value).State.NumberOfEntries;
+            //    if (fsi.Value.IsGlobal == false)
+            //    {
+            //        if (NumberOfEntries != indexNumberOfEntries)
+            //            throw new InvalidOperationException($"{fsi.Key} count should be {NumberOfEntries} but is {indexNumberOfEntries}");
+            //    }
+            //    else
+            //    {
+            //        if (globalDocsCount == -1)
+            //            globalDocsCount = indexNumberOfEntries;
+            //        else if (globalDocsCount != indexNumberOfEntries)
+            //            throw new InvalidOperationException($"{fsi.Key} count is inconsistent, it could be {globalDocsCount} but is {indexNumberOfEntries}");
+            //    }
+            //}
+
+            if (_schema.Key == null)
+                return;
+
+            var pkIndexNumberOfEntries = GetTree(_schema.Key).State.NumberOfEntries;
+            if (_schema.Key.IsGlobal == false)
+            {
+                if (NumberOfEntries != pkIndexNumberOfEntries)
+                    throw new InvalidOperationException($"pk count should be {NumberOfEntries} but is {pkIndexNumberOfEntries}");
+            }
+            else
+            {
+                if (globalDocsCount == -1)
+                    globalDocsCount = pkIndexNumberOfEntries;
+                else if (globalDocsCount != pkIndexNumberOfEntries)
+                    throw new InvalidOperationException($"pk count is inconsistent, it could be {globalDocsCount} but is {pkIndexNumberOfEntries}");
+            }
+        }
+
+        
 
         public void Dispose()
         {

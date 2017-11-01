@@ -1,14 +1,20 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
+using System.Reflection.Metadata.Ecma335;
 using System.Runtime.CompilerServices;
 using System.Threading;
+using Raven.Client;
 using Raven.Client.Documents.Changes;
 using Raven.Server.Documents.Replication;
 using Raven.Client.Exceptions.Documents;
 using Raven.Server.Config;
 using Raven.Server.Documents.Expiration;
+using Raven.Server.Documents.Indexes.MapReduce;
 using Raven.Server.Documents.Revisions;
+using Raven.Server.Extensions;
 using Raven.Server.ServerWide.Context;
 using Raven.Server.Storage.Schema;
 using Raven.Server.Utils;
@@ -183,6 +189,7 @@ namespace Raven.Server.Documents
         public AttachmentsStorage AttachmentsStorage;
         public IdentitiesStorage Identities;
         public DocumentPutAction DocumentPut;
+        private Dictionary<long, long> _allDocs;
 
         public void Dispose()
         {
@@ -511,6 +518,367 @@ namespace Raven.Server.Documents
 
                 yield return TableValueToDocument(context, ref result.Reader);
             }
+        }
+
+        private ConcurrentDictionary<string, List<(long, long)>> _collections;
+
+
+        public void GetIndexesCounts(DocumentsOperationContext context)
+        {
+            var collections = GetCollections(context);
+
+            Dictionary<string, long> collectionsCounts =
+                new Dictionary<string, long>(collections.Select(x => new KeyValuePair<string, long>(x.Name, 0)));
+
+            int docsWithoutMetadata = 0;
+            int docsWithoutCollection = 0;
+            int notFoundDocs = 0;
+            long etagWithoutCollection = 0;
+
+            HashSet<Type> exceptionsTypes = new HashSet<Type>();
+
+           // if (_allDocs == null)
+            {
+                
+
+                _allDocs = new Dictionary<long, long>();
+                //foreach (var k in tbl1.IterateOverEtags(DocsSchema.FixedSizeIndexes[AllDocsEtagsSlice], 0))
+                var counter = 0;
+                foreach (var col in collections )
+                {
+                    var collectionName = GetCollection(col.Name, throwIfDoesNotExist: false);
+                    var collectionTable = context.Transaction.InnerTransaction.OpenTable(DocsSchema,
+                        collectionName.GetTableName(CollectionTableType.Documents));
+
+                    Console.WriteLine($"{col.Name}:{collectionTable.NumberOfEntries}");
+                    var pk = DocsSchema.Key;
+                    Console.WriteLine($"\t{pk.Name} {pk.IsGlobal} {collectionTable.GetTree(pk).State.NumberOfEntries}");
+
+                    foreach (var fsi in DocsSchema.FixedSizeIndexes)
+                    {
+                        Console.WriteLine($"\t{fsi.Key} {fsi.Value.IsGlobal} {collectionTable.GetFixedSizeTree(fsi.Value).NumberOfEntries}");
+                    }
+                    foreach (var fsi in DocsSchema.Indexes)
+                    {
+                        Console.WriteLine($"\t{fsi.Key} {fsi.Value.IsGlobal} {collectionTable.GetTree(fsi.Value).State.NumberOfEntries}");
+                    }
+
+                    //var tbl1 = new Table(DocsSchema, context.Transaction.InnerTransaction);
+                    //var id = result.Value;
+                    //TableValueReader reader;
+
+
+                    //try
+                    //{
+                    //    var ptr = tbl1.DirectRead(result.Value, out int size1);
+                    //    reader = new TableValueReader(id, ptr, size1);
+                    //}
+                    //catch (Exception e)
+                    //{
+                    //    exceptionsTypes.Add(e.GetType());
+                    //    notFoundDocs++;
+                    //    continue;
+                    //}
+
+                    //Document doc;
+                    //try
+                    //{
+                    //    doc = TableValueToDocument(context, ref reader);
+                    //}
+                    //catch (Exception e)
+                    //{
+                    //    exceptionsTypes.Add(e.GetType());
+                    //    notFoundDocs++;
+                    //    continue;
+                    //}
+                    //if (doc.Data.TryGet(Constants.Documents.Metadata.Key, out BlittableJsonReaderObject metadata))
+                    //{
+                    //    if (metadata.TryGet(Constants.Documents.Metadata.Collection, out LazyStringValue collection))
+                    //    {
+                    //        collectionsCounts[collection]++;
+                    //    }
+                    //    else
+                    //    {
+                    //        etagWithoutCollection = doc.Etag;
+                    //        docsWithoutCollection++;
+                    //    }
+                    //}
+                    //else
+                    //{
+                    //    docsWithoutMetadata++;
+                    //    continue;
+                    //}
+
+                    //counter++;
+                    //if (counter % 100_000 == 0)
+                    //{
+                    //    Console.WriteLine(counter);
+                    //    foreach (var keyValuePair in collectionsCounts)
+                    //    {
+                    //        Console.WriteLine($"{keyValuePair.Key}:{keyValuePair.Value}");
+                    //    }
+
+                    //    Console.WriteLine($"docsWithoutMetadata: {docsWithoutMetadata}; docsWithoutCollections: {docsWithoutCollection}; notFoundDocs:{notFoundDocs}");
+                    //    Console.WriteLine("=========================");
+                    //}
+                }
+            }
+
+
+            Console.WriteLine("Summary:");
+            foreach (var keyValuePair in collectionsCounts)
+            {
+                Console.WriteLine($"{keyValuePair.Key}:{keyValuePair.Value}");
+            }
+
+            Console.WriteLine($"docsWithoutMetadata: {docsWithoutMetadata}; docsWithoutCollections: {docsWithoutCollection}; notFoundDocs:{notFoundDocs}");
+            Console.WriteLine($"Etag without collection:{etagWithoutCollection}");
+
+            foreach (var exceptionsType in exceptionsTypes)
+            {
+                Console.WriteLine(exceptionsType.Name);
+            }
+            Console.WriteLine("=========================");
+
+
+            if (_collections == null)
+            {
+                _collections = new ConcurrentDictionary<string, List<(long, long)>>();
+                foreach (var collectionStatse in collections)
+                {
+                    var collection = collectionStatse.Name;
+
+                    var collectionName = GetCollection(collection, throwIfDoesNotExist: false);
+                    var collectionTable = context.Transaction.InnerTransaction.OpenTable(DocsSchema,
+                        collectionName.GetTableName(CollectionTableType.Documents));
+
+                    var currentCollectionEtags = collectionTable.IterateOverEtags(DocsSchema.FixedSizeIndexes[CollectionEtagsSlice], 0)
+                        .ToList();
+                    _collections[collection] = currentCollectionEtags;
+
+                }
+            }
+
+            foreach (var collectionStatse in _collections)
+            {
+                var collection = collectionStatse.Key;
+
+                var collectionName = GetCollection(collection, throwIfDoesNotExist: false);
+                var collectionTable = context.Transaction.InnerTransaction.OpenTable(DocsSchema,
+                    collectionName.GetTableName(CollectionTableType.Documents));
+
+                long etagInCollection = 0;
+                var allDocsIterator = 0;
+                var currentCollectionEtags = collectionStatse.Value;
+                Console.WriteLine($"{collection}:{currentCollectionEtags.Count}");
+                Console.WriteLine("done");
+            }
+
+            Console.WriteLine($"alldocs: {_allDocs.Count}");
+
+        }
+
+
+        public void GetCollectionsCounts(DocumentsOperationContext context)
+        {
+            var collections = GetCollections(context);
+
+            Dictionary<string, long> collectionsCounts = 
+                new Dictionary<string, long>(collections.Select(x => new KeyValuePair<string, long>(x.Name, 0)));
+
+            int docsWithoutMetadata = 0;
+            int docsWithoutCollection = 0;
+            int notFoundDocs = 0;
+            long etagWithoutCollection = 0;
+
+            HashSet<Type> exceptionsTypes = new HashSet<Type>();
+            
+            if (_allDocs == null)
+            {
+                var tbl1 = new Table(DocsSchema, context.Transaction.InnerTransaction);
+
+                _allDocs = new Dictionary<long, long>();
+                //foreach (var k in tbl1.IterateOverEtags(DocsSchema.FixedSizeIndexes[AllDocsEtagsSlice], 0))
+                var counter = 0;
+                foreach (var result in tbl1.IterateOverEtags(DocsSchema.FixedSizeIndexes[AllDocsEtagsSlice], 0))
+                {
+                    var id = result.Value;
+                    TableValueReader reader;
+
+
+                    try
+                    {
+                        var ptr = tbl1.DirectRead(result.Value, out int size1);
+                        reader = new TableValueReader(id, ptr, size1);
+                    }
+                    catch (Exception e)
+                    {
+                        exceptionsTypes.Add(e.GetType());
+                        notFoundDocs++;
+                        continue;
+                    }
+                    
+                    Document doc;
+                    try
+                    {
+                        doc = TableValueToDocument(context, ref reader);
+                    }
+                    catch (Exception e)
+                    {
+                        exceptionsTypes.Add(e.GetType());
+                        notFoundDocs++;
+                        continue;
+                    }
+                    if (doc.Data.TryGet(Constants.Documents.Metadata.Key, out BlittableJsonReaderObject metadata))
+                    {
+                        if (metadata.TryGet(Constants.Documents.Metadata.Collection, out LazyStringValue collection))
+                        {
+                            collectionsCounts[collection]++;
+                        }
+                        else
+                        {
+                            etagWithoutCollection = doc.Etag;
+                            docsWithoutCollection++;
+                        }
+                    }
+                    else
+                    {
+                        docsWithoutMetadata++;
+                        continue;
+                    }
+
+                    counter++;
+                    if (counter % 100_000 == 0)
+                    {
+                        Console.WriteLine(counter);
+                        foreach (var keyValuePair in collectionsCounts)
+                        {
+                            Console.WriteLine($"{keyValuePair.Key}:{keyValuePair.Value}");
+                        }
+
+                        Console.WriteLine($"docsWithoutMetadata: {docsWithoutMetadata}; docsWithoutCollections: {docsWithoutCollection}; notFoundDocs:{notFoundDocs}");
+                        Console.WriteLine("=========================");
+                    }
+                }
+            }
+
+
+            Console.WriteLine("Summary:");
+            foreach (var keyValuePair in collectionsCounts)
+            {
+                Console.WriteLine($"{keyValuePair.Key}:{keyValuePair.Value}");
+            }
+
+            Console.WriteLine($"docsWithoutMetadata: {docsWithoutMetadata}; docsWithoutCollections: {docsWithoutCollection}; notFoundDocs:{notFoundDocs}");
+            Console.WriteLine($"Etag without collection:{etagWithoutCollection}");
+            
+            foreach (var exceptionsType in exceptionsTypes)
+            {
+                Console.WriteLine(exceptionsType.Name);
+            }
+            Console.WriteLine("=========================");
+
+
+            if (_collections == null)
+            {
+                _collections = new ConcurrentDictionary<string, List<(long, long)>>();
+                foreach (var collectionStatse in collections)
+                {
+                    var collection = collectionStatse.Name;
+
+                    var collectionName = GetCollection(collection, throwIfDoesNotExist: false);
+                    var collectionTable = context.Transaction.InnerTransaction.OpenTable(DocsSchema,
+                        collectionName.GetTableName(CollectionTableType.Documents));
+                    
+                    var currentCollectionEtags = collectionTable.IterateOverEtags(DocsSchema.FixedSizeIndexes[CollectionEtagsSlice], 0)
+                        .ToList();
+                    _collections[collection] = currentCollectionEtags;
+                    
+                }
+            }
+
+            foreach (var collectionStatse in _collections)
+            {
+                var collection = collectionStatse.Key;
+
+                var collectionName = GetCollection(collection, throwIfDoesNotExist: false);
+                var collectionTable = context.Transaction.InnerTransaction.OpenTable(DocsSchema,
+                    collectionName.GetTableName(CollectionTableType.Documents));
+                
+                long etagInCollection = 0;
+                var allDocsIterator = 0;
+                var currentCollectionEtags = collectionStatse.Value;
+                Console.WriteLine($"{collection}:{currentCollectionEtags.Count}");
+                Console.WriteLine("done");
+            }
+
+            Console.WriteLine($"alldocs: {_allDocs.Count}");
+            
+        }
+
+        public void Compare(DocumentsOperationContext context, string collection)
+        {
+            var collectionName = GetCollection(collection, throwIfDoesNotExist: false);
+            var collectionTable = context.Transaction.InnerTransaction.OpenTable(DocsSchema,
+                collectionName.GetTableName(CollectionTableType.Documents));
+            
+
+            long etagInCollection = 0;
+            var allDocsIterator = 0;
+            var currentCollectionEtags = collectionTable.IterateOverEtags(DocsSchema.FixedSizeIndexes[CollectionEtagsSlice], 0)
+                .ToList();
+            if (_allDocs == null)
+            {
+                var tbl1 = new Table(DocsSchema, context.Transaction.InnerTransaction);
+
+                _allDocs = new Dictionary<long, long>();
+                foreach (var k in tbl1.IterateOverEtags(DocsSchema.FixedSizeIndexes[AllDocsEtagsSlice], 0))
+                {
+                    _allDocs[k.Key] = k.Value;
+                }
+            }
+
+            foreach (var currentCollectionEtag in currentCollectionEtags)
+            {
+                if (_allDocs.TryGetValue(currentCollectionEtag.Key, out var pos) == false)
+                {
+                    Console.WriteLine("Missing doc " + currentCollectionEtag);
+                    continue;
+                }
+                if (currentCollectionEtag.Value != pos)
+                {
+                    Console.WriteLine("Mismatch on " + currentCollectionEtag);
+                }
+            }
+
+            Console.WriteLine("done");
+
+            //var collectionReached = false;
+            //long a = 0;
+            ////foreach (var res in tbl1.SeekForwardFrom(DocsSchema.FixedSizeIndexes[AllDocsEtagsSlice],0,0))
+            //while(true)
+            //{
+            //    a++;
+            //    //var doc = TableValueToDocument(context, ref res.Reader);
+            //    //if (!(doc.Data[Constants.Documents.Metadata.Key] is BlittableJsonReaderObject metadata))
+            //    //    throw new Exception("metadat is null");
+            //    //var col = metadata[Constants.Documents.Metadata.Collection].ToString();
+
+            //    //if (col != collection)
+            //    //    continue;
+
+            //    var curEtag = currentCollectionIterator.Current;
+            //    if (currentCollectionIterator.MoveNext() == false)
+            //        throw new Exception("We're at the end of the collection index");
+
+            //    //if (currentCollectionIterator.Current!= DocsSchema.Etag)
+            //    //        throw new Exception("etags don't match");
+
+            //    if(etagInCollection > curEtag)
+            //        throw new Exception("etags are not sorted");
+
+            //    etagInCollection = curEtag;
+            //}
         }
 
         public IEnumerable<ReplicationBatchItem> GetDocumentsFrom(DocumentsOperationContext context, long etag)
@@ -1010,7 +1378,7 @@ namespace Raven.Server.Documents
                     local.Tombstone.ChangeVector,
                     modifiedTicks,
                     changeVector,
-                    local.Tombstone.Flags | documentFlags ).Etag;
+                    local.Tombstone.Flags | documentFlags).Etag;
 
                 // We have to raise the notification here because even though we have deleted
                 // a deleted value, we changed the change vector. And maybe we need to replicate 
@@ -1069,7 +1437,7 @@ namespace Raven.Server.Documents
                     (flags & DocumentFlags.Artificial) != DocumentFlags.Artificial)
                 {
                     var revisionsStorage = DocumentDatabase.DocumentsStorage.RevisionsStorage;
-                    if (nonPersistentFlags.Contain(NonPersistentDocumentFlags.FromReplication) == false && 
+                    if (nonPersistentFlags.Contain(NonPersistentDocumentFlags.FromReplication) == false &&
                         (revisionsStorage.Configuration != null || flags.Contain(DocumentFlags.Resolved)))
                     {
                         revisionsStorage.Delete(context, id, lowerId, collectionName, changeVector, modifiedTicks, doc.NonPersistentFlags, flags);

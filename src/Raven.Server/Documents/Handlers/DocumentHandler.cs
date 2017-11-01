@@ -76,6 +76,39 @@ namespace Raven.Server.Documents.Handlers
             }
         }
 
+        [RavenAction("/databases/*/compareTrees", "GET", AuthorizationStatus.ValidUser)]
+        public async Task CompareTrees()
+        {
+            var db = Database;
+            using (db.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
+            using (context.OpenReadTransaction())
+            {
+                db.DocumentsStorage.Compare(context, GetStringQueryString("col"));
+            }
+        }
+
+        [RavenAction("/databases/*/getCollectionsCounts", "GET", AuthorizationStatus.ValidUser)]
+        public async Task GetCollectionsCounts()
+        {
+            var db = Database;
+            using (db.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
+            using (context.OpenReadTransaction())
+            {
+                db.DocumentsStorage.GetCollectionsCounts(context);
+            }
+        }
+
+        [RavenAction("/databases/*/getIndexesCounts", "GET", AuthorizationStatus.ValidUser)]
+        public async Task GetIndexesCounts()
+        {
+            var db = Database;
+            using (db.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
+            using (context.OpenReadTransaction())
+            {
+                db.DocumentsStorage.GetIndexesCounts(context);
+            }
+        }
+
         [RavenAction("/databases/*/docs", "POST", AuthorizationStatus.ValidUser)]
         public async Task PostGet()
         {
