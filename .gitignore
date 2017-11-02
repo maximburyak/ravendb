@@ -117,3 +117,4 @@ temp
 /.idea
 .vscode
 /test/Tryouts/Databases/*
+/test/SlowTests/license.json

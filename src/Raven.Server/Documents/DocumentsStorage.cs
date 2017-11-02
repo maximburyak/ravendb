@@ -881,6 +881,54 @@ namespace Raven.Server.Documents
             //}
         }
 
+
+        public class StuffException : Exception
+        {
+            public StuffException(string str):base(str)
+            {
+                
+            }
+        }
+
+
+        public long GetCollectionsCounts2(DocumentsOperationContext context, long startEtag)
+        {
+            var allDocsIndex = new Table(DocsSchema, context.Transaction.InnerTransaction);
+            CollectionName collectionName=null;
+
+            try
+            {
+                collectionName = GetCollection("Stuff", throwIfDoesNotExist: false);
+            }
+            catch (Exception e)
+            {
+                return startEtag;
+            }
+            if (collectionName == null)
+                return startEtag;
+            var stuffTable = context.Transaction.InnerTransaction.OpenTable(DocsSchema,
+                collectionName.GetTableName(CollectionTableType.Documents));
+            var stuffIterator = stuffTable.IterateOverEtags(DocsSchema.FixedSizeIndexes[CollectionEtagsSlice], startEtag).GetEnumerator();
+            long lastEtag = 0;
+            foreach (var result in allDocsIndex.IterateOverEtags(DocsSchema.FixedSizeIndexes[AllDocsEtagsSlice], startEtag))
+            {
+                var curEtag = result.Key;
+                lastEtag = curEtag;
+                if (stuffIterator.MoveNext() == false)
+                    throw new StuffException($"{curEtag} not found");
+
+                if (curEtag != stuffIterator.Current.Key)
+                    throw new StuffException($"was expecting {curEtag}, received {stuffIterator.Current.Key}");
+
+            }
+
+            if (stuffIterator.MoveNext())
+                throw new StuffException("Too much stuff");
+            return lastEtag;
+
+        }
+
+
         public IEnumerable<ReplicationBatchItem> GetDocumentsFrom(DocumentsOperationContext context, long etag)
         {
             var table = new Table(DocsSchema, context.Transaction.InnerTransaction);

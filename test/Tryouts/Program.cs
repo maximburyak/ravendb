@@ -6,6 +6,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using FastTests.Issues;
 using Raven.Server.Utils;
+using SlowTests.Issues;
 using SlowTests.Voron.Issues;
 
 /*
@@ -33,8 +34,16 @@ namespace Tryouts
             for (int i = 0; i < 10000; i++)
             {
                 Console.WriteLine(i);
-                using (var ravenDb9055 = new RavenDB_9055())
-                    ravenDb9055.AggressivelyCacheWorksWhenTopologyUpdatesIsDisable();
+                try
+                {
+                    using (var ravenDb9055 = new RavenDB_6886())
+                        ravenDb9055.Cluster_identity_for_single_document_in_parallel_on_different_nodes_should_work().Wait();
+                }
+                catch (Exception e)
+                {
+                    Console.WriteLine(e);
+                    
+                }
             }
         }
 

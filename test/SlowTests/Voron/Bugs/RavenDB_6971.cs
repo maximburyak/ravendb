@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Linq;
+using System.Threading.Tasks;
 using FastTests;
 using Raven.Client.Documents.Operations;
 using Raven.Client.Documents.Operations.Indexes;
@@ -12,25 +13,26 @@ namespace SlowTests.Voron.Bugs
     public class RavenDB_6971 : RavenTestBase
     {
         [Fact]
-        public void Overflow_shrink_needs_to_update_scratch_buffer_page_to_avoid_data_override_after_restart()
+        public async Task Overflow_shrink_needs_to_update_scratch_buffer_page_to_avoid_data_override_after_restart()
         {
             using (var store = GetDocumentStore(new Options
             {
                 Path = NewDataPath()
             }))
             {
+                Server.ServerStore.Observer.Suspended = true;
                 store.Admin.Send(new CreateSampleDataOperation());
 
                 for (int i = 0; i < 3; i++)
                 {
-                    store.Operations.Send(new PatchByQueryOperation(new IndexQuery { Query = @"FROM Orders UPDATE { put(""orders/"", this); } " })).WaitForCompletion(TimeSpan.FromSeconds(30));
+                    store.Operations.Send(new PatchByQueryOperation(new IndexQuery { Query = @"FROM Orders UPDATE { put(""orders/"", this); } " })).WaitForCompletion(TimeSpan.FromSeconds(300));
                 }
 
                 WaitForIndexing(store);
 
                 Server.ServerStore.DatabasesLandlord.UnloadDatabase(store.Database);
-
-                store.Operations.Send(new PatchByQueryOperation(new IndexQuery { Query = @"FROM Orders UPDATE { put(""orders/"", this); } " })).WaitForCompletion(TimeSpan.FromSeconds(30));
+                
+                store.Operations.Send(new PatchByQueryOperation(new IndexQuery { Query = @"FROM Orders UPDATE { put(""orders/"", this); } " })).WaitForCompletion(TimeSpan.FromSeconds(300));
 
                 WaitForIndexing(store);
 

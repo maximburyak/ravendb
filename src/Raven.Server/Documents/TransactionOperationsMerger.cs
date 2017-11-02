@@ -232,6 +232,10 @@ namespace Raven.Server.Documents
                             transactionMeter.Dispose();
                         }
                     }
+                    catch (DocumentsStorage.StuffException e)
+                    {
+                        throw;
+                    }
                     catch (Exception e)
                     {
                         if (_log.IsInfoEnabled)
@@ -280,8 +284,15 @@ namespace Raven.Server.Documents
             }
         }
 
+        private static long lastEtag=0;
+        private static void AssertVoronEtagIndexes(DocumentsOperationContext context)
+        {
+            context.DocumentDatabase.DocumentsStorage.GetCollectionsCounts2(context, 10001);
+        }
+        
         private static void UpdateGlobalReplicationInfoBeforeCommit(DocumentsOperationContext context)
         {
+            AssertVoronEtagIndexes(context);
             if (string.IsNullOrEmpty(context.LastDatabaseChangeVector) == false)
             {
                 DocumentsStorage.SetDatabaseChangeVector(context, context.LastDatabaseChangeVector);
@@ -357,6 +368,10 @@ namespace Raven.Server.Documents
                             }
                             calledCompletePreviousTx = true;
                             CompletePreviousTransaction(previous, ref previousPendingOps, throwOnError: true);
+                        }
+                        catch (DocumentsStorage.StuffException e)
+                        {
+                            throw;
                         }
                         catch (Exception e)
                         {
