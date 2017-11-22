@@ -265,6 +265,99 @@ namespace Voron.Data.Fixed
                 return false;
             }
 
+            private bool MovePrev(int skip)
+            {
+                AssertNoChanges();
+
+                if (_currentPage == null || _currentPage.IsLeaf == false)
+                    throw new InvalidOperationException("No current page was set or is wasn't a leaf!");
+
+                while (skip >= 0)
+                {
+                    var skipInPage = Math.Min(_currentPage.LastSearchPosition, skip);
+                    skip -= skipInPage;
+                    _currentPage.LastSearchPosition -= skipInPage;
+                    if (skip == 0 /*&& _currentPage.LastSearchPosition < _currentPage.NumberOfEntries*/)
+                    {
+                        return true;
+                    }
+                    
+                    while (true)
+                    {
+                        if (_parent._cursor.TryPeek(out var parent) == false)
+                            return false;
+                        
+                        if (parent.LastSearchPosition == 0)
+                        {
+                            _parent._cursor.Pop();
+                            continue;
+                        }
+                        parent.LastSearchPosition--;
+                        var nextChildPageNumber = parent.GetEntry(parent.LastSearchPosition)->PageNumber;
+                        var childPage = _parent.GetReadOnlyPage(nextChildPageNumber);
+                        childPage.LastSearchPosition = _currentPage.NumberOfEntries-1;
+                        if (childPage.IsBranch)
+                        {
+                            _parent._cursor.Push(childPage);
+                            continue;
+                        }
+                        skip--;
+                        _currentPage = childPage;
+                        break;
+                    }
+                }
+                _currentPage = null;
+
+                return false;
+            }
+            
+            private bool MoveNext(int skip)
+            {
+                AssertNoChanges();
+
+                if (_currentPage == null || _currentPage.IsLeaf == false)
+                    throw new InvalidOperationException("No current page was set or is wasn't a leaf!");
+
+                while (skip >= 0)
+                {
+                    var skipInPage = Math.Min(_currentPage.NumberOfEntries - _currentPage.LastSearchPosition -1, skip);
+                    skip -= skipInPage;
+                    _currentPage.LastSearchPosition += skipInPage;
+                    if (skip == 0 && _currentPage.LastSearchPosition < _currentPage.NumberOfEntries)
+                    {
+                        return true;
+                    }
+                    
+                    while (true)
+                    {
+                        if (_parent._cursor.TryPeek(out var parent) == false)
+                            return false;
+                        
+                        if (parent.LastSearchPosition + 1 >= parent.NumberOfEntries)
+                        {
+                            _parent._cursor.Pop();
+                            continue;
+                        }
+                        parent.LastSearchPosition++;
+                        var nextChildPageNumber = parent.GetEntry(parent.LastSearchPosition)->PageNumber;
+                        var childPage = _parent.GetReadOnlyPage(nextChildPageNumber);
+                        childPage.LastSearchPosition = 0;
+                        if (childPage.IsBranch)
+                        {
+                            _parent._cursor.Push(childPage);
+                            continue;
+                        }
+                        skip--;
+                        _currentPage = childPage;
+                        break;
+                    }
+                }
+                _currentPage = null;
+
+                return false;
+            }
+
+
             public bool MovePrev()
             {
                 AssertNoChanges();
@@ -308,13 +401,15 @@ namespace Voron.Data.Fixed
 
             public bool Skip(int count)
             {
-                if (count != 0)
+                if (count > 0)
                 {
-                    for (int i = 0; i < Math.Abs(count); i++)
-                    {
-                        if (!MoveNext())
-                            break;
-                    }
+                    if (MoveNext(count) == false)
+                        return false;
+                }
+                else
+                {
+                    if (MovePrev(Math.Abs(count)) == false)
+                        return false;
                 }
 
                 var seek = _currentPage != null && _currentPage.LastSearchPosition != _currentPage.NumberOfEntries;

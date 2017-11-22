@@ -42,7 +42,7 @@ namespace Raven.Server.ServerWide.Commands.Subscriptions
             var subscription = JsonDeserializationCluster.SubscriptionState(existingValue);
 
             if (record.Topology.WhoseTaskIsIt(subscription, state) != NodeTag)
-                throw new InvalidOperationException($"Can't update subscription with name {subscriptionName} by node {NodeTag}, because it's not it's task to update this subscription");
+                throw new SubscriptionDoesNotBelongToNodeException($"Can't update subscription with name {subscriptionName} by node {NodeTag}, because it's not it's task to update this subscription");
 
             if (ChangeVector == nameof(Constants.Documents.SubscriptionChangeVectorSpecialStates.DoNotChange))
             {

@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Lucene.Net.Util;
 using Raven.Client.Documents.Changes;
 using Raven.Client.Documents.Subscriptions;
+using Raven.Client.Exceptions.Cluster;
 using Raven.Client.Util;
 using Raven.Server.Documents.Subscriptions;
 using Raven.Server.Json;
@@ -302,20 +303,14 @@ namespace Raven.Server.Documents.TcpHandlers
                 }
                 else if (ex is SubscriptionDoesNotBelongToNodeException subscriptionDoesNotBelongException)
                 {
-                    if (connection._logger.IsInfoEnabled)
+                    await SendSubscriptionDoesNotBelongToNodeResponse(subscriptionDoesNotBelongException);
+                }
+                else if (ex is CommandExecutionException)
+                {
+                    /*if (ex.InnerException != null)
                     {
-                        connection._logger.Info("Subscription does not belong to current node", ex);
-                    }
-                    await connection.WriteJsonAsync(new DynamicJsonValue
-                    {
-                        [nameof(SubscriptionConnectionServerMessage.Type)] = nameof(SubscriptionConnectionServerMessage.MessageType.ConnectionStatus),
-                        [nameof(SubscriptionConnectionServerMessage.Status)] = nameof(SubscriptionConnectionServerMessage.ConnectionStatus.Redirect),
-                        [nameof(SubscriptionConnectionServerMessage.Message)] = ex.Message,
-                        [nameof(SubscriptionConnectionServerMessage.Data)] = new DynamicJsonValue
-                        {
-                            [nameof(SubscriptionConnectionServerMessage.SubscriptionRedirectData.RedirectedTag)] = subscriptionDoesNotBelongException.AppropriateNode
-                        }
-                    });
+                        if (ex.InnerException is subscriptionDoesNotBelongException)
+                    }*/
                 }
                 else if (ex is SubscriptionChangeVectorUpdateConcurrencyException subscriptionConcurrency)
                 {
@@ -349,6 +344,24 @@ namespace Raven.Server.Documents.TcpHandlers
             catch
             {
                 // ignored
+            }
+
+            async Task SendSubscriptionDoesNotBelongToNodeResponse(SubscriptionDoesNotBelongToNodeException subscriptionDoesNotBelongException)
+            {
+                if (connection._logger.IsInfoEnabled)
+                {
+                    connection._logger.Info("Subscription does not belong to current node", ex);
+                }
+                await connection.WriteJsonAsync(new DynamicJsonValue
+                {
+                    [nameof(SubscriptionConnectionServerMessage.Type)] = nameof(SubscriptionConnectionServerMessage.MessageType.ConnectionStatus),
+                    [nameof(SubscriptionConnectionServerMessage.Status)] = nameof(SubscriptionConnectionServerMessage.ConnectionStatus.Redirect),
+                    [nameof(SubscriptionConnectionServerMessage.Message)] = ex.Message,
+                    [nameof(SubscriptionConnectionServerMessage.Data)] = new DynamicJsonValue
+                    {
+                        [nameof(SubscriptionConnectionServerMessage.SubscriptionRedirectData.RedirectedTag)] = subscriptionDoesNotBelongException.AppropriateNode
+                    }
+                });
             }
         }
 
