@@ -10,6 +10,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Runtime.ExceptionServices;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Primitives;
 using Raven.Client;
@@ -57,7 +58,7 @@ namespace Raven.Server.Documents.Handlers
         }
 
         [RavenAction("/databases/*/docs", "GET", AuthorizationStatus.ValidUser)]
-        public Task Get()
+        public async Task Get()
         {
             var ids = GetStringValuesQueryString("id", required: false);
             var metadataOnly = GetBoolValueQueryString("metadataOnly", required: false) ?? false;
@@ -66,11 +67,9 @@ namespace Raven.Server.Documents.Handlers
             using (context.OpenReadTransaction())
             {
                 if (ids.Count > 0)
-                    GetDocumentsById(context, ids, metadataOnly);
+                    await GetDocumentsById(context, ids, metadataOnly);
                 else
-                    GetDocuments(context, metadataOnly);
-
-                return Task.CompletedTask;
+                    await GetDocumentsAsync(context, metadataOnly);
             }
         }
 
@@ -92,11 +91,11 @@ namespace Raven.Server.Documents.Handlers
                 }
 
                 context.OpenReadTransaction();
-                GetDocumentsById(context, new StringValues(ids), metadataOnly);
+                await GetDocumentsById(context, new StringValues(ids), metadataOnly);
             }
         }
 
-        private void GetDocuments(DocumentsOperationContext context, bool metadataOnly)
+        private async Task GetDocumentsAsync(DocumentsOperationContext context, bool metadataOnly)
         {
             var sw = Stopwatch.StartNew();
 
@@ -137,20 +136,23 @@ namespace Raven.Server.Documents.Handlers
 
             int numberOfResults;
 
-            using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
+            using (var writer = new BlittableJsonTextWriter2(context,ResponseBodyStream(), Database.DatabaseShutdown))
             {
                 writer.WriteStartObject();
                 writer.WritePropertyName("Results");
 
-                writer.WriteDocuments(context, documents, metadataOnly, out numberOfResults);
+                numberOfResults = await writer.WriteDocuments2(context, documents, metadataOnly);
 
                 writer.WriteEndObject();
+
+                await writer.OuterFlushAsync();
+
             }
 
-            AddPagingPerformanceHint(PagingOperationType.Documents, isStartsWith ? nameof(DocumentsStorage.GetDocumentsStartingWith) : nameof(GetDocuments), HttpContext.Request.QueryString.Value, numberOfResults, pageSize, sw.ElapsedMilliseconds);
+            AddPagingPerformanceHint(PagingOperationType.Documents, isStartsWith ? nameof(DocumentsStorage.GetDocumentsStartingWith) : nameof(GetDocumentsAsync), HttpContext.Request.QueryString.Value, numberOfResults, pageSize, sw.ElapsedMilliseconds);
         }
 
-        private void GetDocumentsById(DocumentsOperationContext context, StringValues ids, bool metadataOnly)
+        private async Task GetDocumentsById(DocumentsOperationContext context, StringValues ids, bool metadataOnly)
         {
             var sw = Stopwatch.StartNew();
 
@@ -184,33 +186,28 @@ namespace Raven.Server.Documents.Handlers
 
             HttpContext.Response.Headers[Constants.Headers.Etag] = "\"" + actualEtag + "\"";
 
-            int numberOfResults;
-            var blittable = GetBoolValueQueryString("blittable", required: false) ?? false;
-            if (blittable)
-            {
-                WriteDocumentsBlittable(context, documents, includes, out numberOfResults);
-            }
-            else
-            {
-                WriteDocumentsJson(context, metadataOnly, documents, includes, out numberOfResults);
-            }
+            var numberOfResults = await WriteDocumentsJson(context, metadataOnly, documents, includes);
 
-            AddPagingPerformanceHint(PagingOperationType.Documents, nameof(GetDocumentsById), HttpContext.Request.QueryString.Value, numberOfResults, documents.Count, sw.ElapsedMilliseconds);
+            AddPagingPerformanceHint(PagingOperationType.Documents, nameof(GetDocumentsById), HttpContext.Request.QueryString.Value, numberOfResults, documents.Count,
+                sw.ElapsedMilliseconds);
         }
 
-        private void WriteDocumentsJson(JsonOperationContext context, bool metadataOnly, IEnumerable<Document> documentsToWrite, List<Document> includes, out int numberOfResults)
+        private async Task<int> WriteDocumentsJson(JsonOperationContext context, bool metadataOnly, IEnumerable<Document> documentsToWrite, List<Document> includes)
         {
-            using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
+            var responseBodyStream = ResponseBodyStream();
+
+            using (var writer = new BlittableJsonTextWriter2(context, responseBodyStream, Database.DatabaseShutdown))
             {
                 writer.WriteStartObject();
                 writer.WritePropertyName(nameof(GetDocumentsResult.Results));
-                writer.WriteDocuments(context, documentsToWrite, metadataOnly, out numberOfResults);
+
+                var numberOfResults = await writer.WriteDocuments2(context, documentsToWrite, metadataOnly);
 
                 writer.WriteComma();
                 writer.WritePropertyName(nameof(GetDocumentsResult.Includes));
                 if (includes.Count > 0)
                 {
-                    writer.WriteIncludes(context, includes);
+                    await writer.WriteIncludes2(context, includes);
                 }
                 else
                 {
@@ -219,48 +216,10 @@ namespace Raven.Server.Documents.Handlers
                 }
 
                 writer.WriteEndObject();
-            }
-        }
 
-        private void WriteDocumentsBlittable(DocumentsOperationContext context, IEnumerable<Document> documentsToWrite, List<Document> includes, out int numberOfResults)
-        {
-            numberOfResults = 0;
-            HttpContext.Response.Headers["Content-Type"] = "binary/blittable-json";
+                await writer.OuterFlushAsync();
 
-            using (var streamBuffer = new UnmanagedStreamBuffer(context, ResponseBodyStream()))
-            using (var writer = new ManualBlittableJsonDocumentBuilder<UnmanagedStreamBuffer>(context,
-                null, new BlittableWriter<UnmanagedStreamBuffer>(context, streamBuffer)))
-            {
-                writer.StartWriteObjectDocument();
-
-                writer.StartWriteObject();
-                writer.WritePropertyName(nameof(GetDocumentsResult.Results));
-
-                writer.StartWriteArray();
-
-                foreach (var document in documentsToWrite)
-                {
-                    numberOfResults++;
-                    writer.WriteEmbeddedBlittableDocument(document.Data);
-                }
-
-                writer.WriteArrayEnd();
-
-                writer.WritePropertyName(nameof(GetDocumentsResult.Includes));
-
-                writer.StartWriteObject();
-
-                foreach (var include in includes)
-                {
-                    writer.WritePropertyName(include.Id);
-                    writer.WriteEmbeddedBlittableDocument(include.Data);
-                }
-
-                writer.WriteObjectEnd();
-
-                writer.WriteObjectEnd();
-
-                writer.FinalizeDocument();
+                return numberOfResults;
             }
         }
 
@@ -308,7 +267,7 @@ namespace Raven.Server.Documents.Handlers
 
                 HttpContext.Response.StatusCode = (int)HttpStatusCode.Created;
 
-                using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
+                using (var writer = new BlittableJsonTextWriter2(context, ResponseBodyStream(), Database.DatabaseShutdown))
                 {
                     writer.WriteStartObject();
 
@@ -320,6 +279,7 @@ namespace Raven.Server.Documents.Handlers
                     writer.WriteString(cmd.PutResult.ChangeVector);
 
                     writer.WriteEndObject();
+                    await writer.OuterFlushAsync();
                 }
             }
         }
@@ -393,7 +353,7 @@ namespace Raven.Server.Documents.Handlers
                             throw new ArgumentOutOfRangeException();
                     }
 
-                    using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
+                    using (var writer = new BlittableJsonTextWriter2(context, ResponseBodyStream(), Database.DatabaseShutdown))
                     {
                         writer.WriteStartObject();
 
@@ -417,7 +377,7 @@ namespace Raven.Server.Documents.Handlers
 
                             writer.WritePropertyName(nameof(command.PatchResult.Debug));
 
-                            context.Write(writer, new DynamicJsonValue
+                            context.Write2(writer, new DynamicJsonValue
                             {
                                 ["Info"] = new DynamicJsonArray(command.DebugOutput),
                                 ["Actions"] = command.DebugActions?.GetDebugActions()
@@ -426,6 +386,7 @@ namespace Raven.Server.Documents.Handlers
 
 
                         writer.WriteEndObject();
+                        await writer.OuterFlushAsync();
                     }
                 }
             }

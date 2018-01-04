@@ -143,6 +143,15 @@ namespace Raven.Server
                         options.Limits.MinResponseDataRate = new MinDataRate(Configuration.Http.MinDataRatePerSecond.Value.GetValue(SizeUnit.Bytes), Configuration.Http.MinDataRateGracePeriod.Value.AsTimeSpan);
                         options.Limits.MinRequestBodyDataRate = new MinDataRate(Configuration.Http.MinDataRatePerSecond.Value.GetValue(SizeUnit.Bytes), Configuration.Http.MinDataRateGracePeriod.Value.AsTimeSpan);
                     }
+                    if (Configuration.Http.DefaultConnectionLimit.HasValue)
+                    {
+                        ServicePointManager.DefaultConnectionLimit = Configuration.Http.DefaultConnectionLimit.Value;
+                    }
+
+                    if (Configuration.Http.MinThreads.HasValue)
+                    {
+                        ThreadPool.SetMinThreads(Configuration.Http.MinThreads.Value, Configuration.Http.MinThreads.Value);
+                    }
 
                     if (Configuration.Http.MaxRequestBufferSize.HasValue)
                         options.Limits.MaxRequestBufferSize = Configuration.Http.MaxRequestBufferSize.Value.GetValue(SizeUnit.Bytes);

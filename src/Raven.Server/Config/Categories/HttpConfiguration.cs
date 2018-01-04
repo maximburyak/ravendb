@@ -56,5 +56,15 @@ namespace Raven.Server.Config.Categories
         [DefaultValue(CompressionLevel.Optimal)]
         [ConfigurationEntry("Http.StaticFilesResponseCompressionLevel", ConfigurationEntryScope.ServerWideOnly)]
         public CompressionLevel StaticFilesResponseCompressionLevel { get; set; }
+
+        [Description("Default connections limit of the service point manager")]
+        [DefaultValue(null)]
+        [ConfigurationEntry("Http.DefaultConnectionLimit", ConfigurationEntryScope.ServerWideOnly)]
+        public int? DefaultConnectionLimit { get; set; }
+
+        [Description("Compression level to be used when compressing static files")]
+        [DefaultValue(null)]
+        [ConfigurationEntry("Http.MinThreads", ConfigurationEntryScope.ServerWideOnly)]
+        public int? MinThreads{ get; set; }
     }
 }

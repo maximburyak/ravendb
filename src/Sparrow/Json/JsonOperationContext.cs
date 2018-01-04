@@ -32,10 +32,10 @@ namespace Sparrow.Json
         private readonly ArenaMemoryAllocator _arenaAllocator;
         private ArenaMemoryAllocator _arenaAllocatorForLongLivedValues;
         private AllocatedMemoryData _tempBuffer;
-        private List<GCHandle> _pinnedObjects;
-   
-        private readonly Dictionary<string, LazyStringValue> _fieldNames = new Dictionary<string, LazyStringValue>(OrdinalStringStructComparer.Instance);
+        private List<GCHandle> _pinnedObjects;        
 
+        private readonly Dictionary<string, LazyStringValue> _fieldNames = new Dictionary<string, LazyStringValue>(OrdinalStringStructComparer.Instance);
+                
         private struct PathCacheHolder
         {
             public PathCacheHolder(Dictionary<StringSegment, object> path, Dictionary<int, object> byIndex)
@@ -53,7 +53,9 @@ namespace Sparrow.Json
 
         private int _numberOfAllocatedStringsValues;
         private readonly FastList<LazyStringValue> _allocateStringValues = new FastList<LazyStringValue>(256);
-        
+
+        private MemoryStream _cachedMemoryStream;
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void AcquirePathCache(out Dictionary<StringSegment, object> pathCache, out Dictionary<int, object> pathCacheByIndex)
         {
@@ -839,10 +841,19 @@ namespace Sparrow.Json
             }
         }
 
-        public void Write(BlittableJsonTextWriter writer, BlittableJsonReaderObject json)
+        public async Task Write2(Stream stream, BlittableJsonReaderObject json, CancellationToken ct)
         {
-            WriteInternal(writer, json);
+            using (var writer = new BlittableJsonTextWriter2(this, stream,ct))
+            {
+                writer.WriteObjectOrdered(json);
+                await writer.OuterFlushAsync();
+            }
         }
+
+        public void Write2(BlittableJsonTextWriter2 writer, BlittableJsonReaderObject json)
+        {
+            WriteInternal2(writer, json);
+        }        
 
         private void WriteInternal(BlittableJsonTextWriter writer, object json)
         {
@@ -856,9 +867,31 @@ namespace Sparrow.Json
             _objectJsonParser.Reset(null);
         }
 
+        private void WriteInternal2(BlittableJsonTextWriter2 writer, object json)
+        {
+            _jsonParserState.Reset();
+            _objectJsonParser.Reset(json);
+
+            _objectJsonParser.Read();
+
+            WriteObject2(writer, _jsonParserState, _objectJsonParser);
+
+            _objectJsonParser.Reset(null);
+        }
+
         public void Write(BlittableJsonTextWriter writer, DynamicJsonValue json)
         {
             WriteInternal(writer, json);
+        }
+
+        public void Write(BlittableJsonTextWriter writer, BlittableJsonReaderObject json)
+        {
+            WriteInternal(writer, json);
+        }
+
+        public void Write2(BlittableJsonTextWriter2 writer, DynamicJsonValue json)
+        {
+            WriteInternal2(writer, json);
         }
 
         public void Write(BlittableJsonTextWriter writer, DynamicJsonArray json)
@@ -905,6 +938,39 @@ namespace Sparrow.Json
             writer.WriteEndObject();
         }
 
+        public unsafe void WriteObject2(BlittableJsonTextWriter2 writer, JsonParserState state, ObjectJsonParser parser)
+        {
+            if (state.CurrentTokenType != JsonParserToken.StartObject)
+                throw new InvalidOperationException("StartObject expected, but got " + state.CurrentTokenType);
+
+            writer.WriteStartObject();
+            bool first = true;
+            while (true)
+            {
+                if (parser.Read() == false)
+                    throw new InvalidOperationException("Object json parser can't return partial results");
+                if (state.CurrentTokenType == JsonParserToken.EndObject)
+                    break;
+
+                if (state.CurrentTokenType != JsonParserToken.String)
+                    throw new InvalidOperationException("Property expected, but got " + state.CurrentTokenType);
+
+                if (first == false)
+                    writer.WriteComma();
+                first = false;
+
+                var lazyStringValue = AllocateStringValue(null, state.StringBuffer, state.StringSize);
+                writer.WritePropertyName(lazyStringValue);
+
+                if (parser.Read() == false)
+                    throw new InvalidOperationException("Object json parser can't return partial results");
+
+                WriteValue2(writer, state, parser);
+            }
+            writer.WriteEndObject();
+        }
+       
+
         private unsafe void WriteValue(BlittableJsonTextWriter writer, JsonParserState state, ObjectJsonParser parser)
         {
             switch (state.CurrentTokenType)
@@ -947,6 +1013,49 @@ namespace Sparrow.Json
             }
         }
 
+        private unsafe void WriteValue2(BlittableJsonTextWriter2 writer, JsonParserState state, ObjectJsonParser parser)
+        {
+            switch (state.CurrentTokenType)
+            {
+                case JsonParserToken.Null:
+                    writer.WriteNull();
+                    break;
+                case JsonParserToken.False:
+                    writer.WriteBool(false);
+                    break;
+                case JsonParserToken.True:
+                    writer.WriteBool(true);
+                    break;
+                case JsonParserToken.String:
+                    if (state.CompressedSize.HasValue)
+                    {
+                        var lazyCompressedStringValue = new LazyCompressedStringValue(null, state.StringBuffer,
+                            state.StringSize, state.CompressedSize.Value, this);
+                        writer.WriteString(lazyCompressedStringValue);
+                    }
+                    else
+                    {
+                        writer.WriteString(AllocateStringValue(null, state.StringBuffer, state.StringSize));
+                    }
+                    break;
+                case JsonParserToken.Float:
+                    writer.WriteDouble(new LazyNumberValue(AllocateStringValue(null, state.StringBuffer, state.StringSize)));
+                    break;
+                case JsonParserToken.Integer:
+                    writer.WriteInteger(state.Long);
+                    break;
+                case JsonParserToken.StartObject:
+                    WriteObject2(writer, state, parser);
+                    break;
+                case JsonParserToken.StartArray:
+                    WriteArray2(writer, state, parser);
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException("Could not understand " + state.CurrentTokenType);
+            }
+        }
+
+
         public void WriteArray(BlittableJsonTextWriter writer, JsonParserState state, ObjectJsonParser parser)
         {
             if (state.CurrentTokenType != JsonParserToken.StartArray)
@@ -967,6 +1076,30 @@ namespace Sparrow.Json
                 first = false;
 
                 WriteValue(writer, state, parser);
+            }
+            writer.WriteEndArray();
+        }
+
+        public void WriteArray2(BlittableJsonTextWriter2 writer, JsonParserState state, ObjectJsonParser parser)
+        {
+            if (state.CurrentTokenType != JsonParserToken.StartArray)
+                throw new InvalidOperationException("StartArray expected, but got " + state.CurrentTokenType);
+
+            writer.WriteStartArray();
+            bool first = true;
+            while (true)
+            {
+                if (parser.Read() == false)
+                    throw new InvalidOperationException("Object json parser can't return partial results");
+
+                if (state.CurrentTokenType == JsonParserToken.EndArray)
+                    break;
+
+                if (first == false)
+                    writer.WriteComma();
+                first = false;
+
+                WriteValue2(writer, state, parser);
             }
             writer.WriteEndArray();
         }
@@ -1005,6 +1138,23 @@ namespace Sparrow.Json
             _pinnedObjects.Add(handle);
 
             return handle.AddrOfPinnedObject();
+        }
+        public MemoryStream CheckoutMemoryStream()
+        {
+            if (_cachedMemoryStream == null)
+                return new MemoryStream();
+            _cachedMemoryStream.SetLength(0);
+            var tmp = _cachedMemoryStream;
+            return tmp;
+        }
+
+        public void ReturnMemoryStream(MemoryStream ms)
+        {
+            if (ms == null)
+                return;
+
+            ms.SetLength(0);
+            _cachedMemoryStream = ms;
         }
     }
 }
