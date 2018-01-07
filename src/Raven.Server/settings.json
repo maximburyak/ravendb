@@ -1,4 +1,4 @@
 ﻿{
-    "ServerUrl": "http://127.0.0.1:8080",
+    "ServerUrl": "http://10.0.0.68:8080",
     "Setup.Mode": "None"
 }

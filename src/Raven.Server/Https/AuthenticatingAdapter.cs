@@ -1,5 +1,6 @@
 ﻿using System;
 using System.IO;
+using System.IO.Pipelines;
 using System.Reflection;
 using System.Reflection.Emit;
 using System.Security.Authentication;
@@ -7,7 +8,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Http.Features.Authentication;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Adapter.Internal;
-using Microsoft.AspNetCore.Server.Kestrel.Internal.System.IO.Pipelines;
+
 using Sparrow.Logging;
 
 namespace Raven.Server.Https
