@@ -123,6 +123,30 @@ namespace Sparrow.Json
             WriteEndObject();
         }
 
+        public async Task WriteObject2(BlittableJsonReaderObject obj)
+        {
+            if (obj == null)
+            {
+                WriteNull();
+                return;
+            }
+            WriteStartObject();
+            var prop = new BlittableJsonReaderObject.PropertyDetails();
+            for (var i = 0; i < obj.Count; i++)
+            {
+                if (i != 0)
+                {
+                    WriteComma();
+                }
+                obj.GetPropertyByIndex(i, ref prop);
+                WritePropertyName(prop.Name);
+
+                await WriteValue2(prop.Token & BlittableJsonReaderBase.TypesMask, prop.Value, originalPropertyOrder: false);
+            }
+
+            WriteEndObject();
+        }
+
 
         private void WriteArrayToStream(BlittableJsonReaderArray blittableArray, bool originalPropertyOrder)
         {
@@ -141,6 +165,26 @@ namespace Sparrow.Json
 
             }
             WriteEndArray();
+        }
+
+        private async Task WriteArrayToStream2(BlittableJsonReaderArray blittableArray, bool originalPropertyOrder)
+        {
+            WriteStartArray();
+            var length = blittableArray.Length;
+            for (var i = 0; i < length; i++)
+            {
+                var propertyValueAndType = blittableArray.GetValueTokenTupleByIndex(i);
+
+                if (i != 0)
+                {
+                    WriteComma();
+                }
+                // write field value
+                await WriteValue2(propertyValueAndType.Item2, propertyValueAndType.Item1, originalPropertyOrder);
+                await OuterFlushAsync();
+            }
+            WriteEndArray();
+            await OuterFlushAsync();
         }
 
         public void WriteValue(BlittableJsonToken token, object val, bool originalPropertyOrder = false)
@@ -163,6 +207,44 @@ namespace Sparrow.Json
                         WriteObjectOrdered(blittableJsonReaderObject);
                     else
                         WriteObject(blittableJsonReaderObject);
+                    break;
+                case BlittableJsonToken.CompressedString:
+                    WriteString((LazyCompressedStringValue)val);
+                    break;
+                case BlittableJsonToken.LazyNumber:
+                    WriteDouble((LazyNumberValue)val);
+                    break;
+                case BlittableJsonToken.Boolean:
+                    WriteBool((bool)val);
+                    break;
+                case BlittableJsonToken.Null:
+                    WriteNull();
+                    break;
+                default:
+                    throw new DataMisalignedException($"Unidentified Type {token}");
+            }
+        }
+
+        public async Task WriteValue2(BlittableJsonToken token, object val, bool originalPropertyOrder = false)
+        {
+            switch (token)
+            {
+                case BlittableJsonToken.String:
+                    WriteString((LazyStringValue)val);
+                    break;
+                case BlittableJsonToken.Integer:
+                    WriteInteger((long)val);
+                    break;
+                case BlittableJsonToken.StartArray:
+                    await WriteArrayToStream2((BlittableJsonReaderArray)val, originalPropertyOrder);
+                    break;
+                case BlittableJsonToken.EmbeddedBlittable:
+                case BlittableJsonToken.StartObject:
+                    var blittableJsonReaderObject = ((BlittableJsonReaderObject)val);
+                    if (originalPropertyOrder)
+                        WriteObjectOrdered(blittableJsonReaderObject);
+                    else
+                        await WriteObject2(blittableJsonReaderObject);
                     break;
                 case BlittableJsonToken.CompressedString:
                     WriteString((LazyCompressedStringValue)val);
@@ -482,6 +564,7 @@ WriteLargeCompressedString:
             _pos = 0;
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ValueTask<int> MaybeOuterFlsuhAsync()
         {
             if (_stream.Length * 2 <= _stream.Capacity)
