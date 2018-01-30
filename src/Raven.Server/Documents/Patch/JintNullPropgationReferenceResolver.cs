@@ -26,7 +26,7 @@ namespace Raven.Server.Documents.Patch
             {
                 throw new MissingMethodException($"Could not locate refrence to the method: {@ref.GetReferencedName()}");
             }
-            value = new JsValue(new ClrFunctionInstance(engine, (thisObj, values) => thisObj));
+            value = (JsValue)(new ClrFunctionInstance(engine, (thisObj, values) => thisObj));
             return true;
         }
 

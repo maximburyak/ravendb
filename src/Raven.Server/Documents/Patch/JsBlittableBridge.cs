@@ -293,7 +293,7 @@ namespace Raven.Server.Documents.Patch
             }
         }
 
-        private IEnumerable<KeyValuePair<string, PropertyDescriptor>> GetObjectProperties(ObjectWrapper objectWrapper)
+        private IEnumerable<KeyValuePair<string, IPropertyDescriptor>> GetObjectProperties(ObjectWrapper objectWrapper)
         {
             var target = objectWrapper.Target;
             if (target is IDictionary dictionary)
@@ -302,7 +302,7 @@ namespace Raven.Server.Documents.Patch
                 {
                     var jsValue = JsValue.FromObject(_scriptEngine, entry.Value);
                     var descriptor = new PropertyDescriptor(jsValue, false, false, false);
-                    yield return new KeyValuePair<string, PropertyDescriptor>(entry.Key.ToString(), descriptor);
+                    yield return new KeyValuePair<string, IPropertyDescriptor>(entry.Key.ToString(), descriptor);
                 }
                 yield break;
             }
@@ -319,12 +319,12 @@ namespace Raven.Server.Documents.Patch
                     if (property.Name == nameof(Task<int>.Result))
                     {
                         var taskResultDescriptor = JintPreventResolvingTasksReferenceResolver.GetRunningTaskResult(task);
-                        yield return new KeyValuePair<string, PropertyDescriptor>(property.Name, taskResultDescriptor);
+                        yield return new KeyValuePair<string, IPropertyDescriptor>(property.Name, taskResultDescriptor);
                         continue;
                     }
 
                     var descriptor = new PropertyInfoDescriptor(_scriptEngine, property, target);
-                    yield return new KeyValuePair<string, PropertyDescriptor>(property.Name, descriptor);
+                    yield return new KeyValuePair<string, IPropertyDescriptor>(property.Name, descriptor);
                 }
                 yield break;
             }
@@ -336,18 +336,18 @@ namespace Raven.Server.Documents.Patch
                     continue;
 
                 var descriptor = new PropertyInfoDescriptor(_scriptEngine, property, target);
-                yield return new KeyValuePair<string, PropertyDescriptor>(property.Name, descriptor);
+                yield return new KeyValuePair<string, IPropertyDescriptor>(property.Name, descriptor);
             }
 
             // look for fields
             foreach (var field in type.GetFields(BindingFlags.Instance | BindingFlags.Public))
             {
                 var descriptor = new FieldInfoDescriptor(_scriptEngine, field, target);
-                yield return new KeyValuePair<string, PropertyDescriptor>(field.Name, descriptor);
+                yield return new KeyValuePair<string, IPropertyDescriptor>(field.Name, descriptor);
             }
         }
 
-        private JsValue SafelyGetJsValue(PropertyDescriptor property)
+        private JsValue SafelyGetJsValue(IPropertyDescriptor property)
         {
             try
             {
@@ -355,7 +355,7 @@ namespace Raven.Server.Documents.Patch
             }
             catch (Exception e)
             {
-                return new JsValue(e.ToString());
+                return (JsValue)(e.ToString());
             }
         }
 

@@ -43,7 +43,7 @@ namespace Raven.Server.Documents.Patch
                 value = new BlittableObjectProperty(this, key);
                 if (propertyIndex == -1)
                 {
-                    value.Value = new JsValue(new ObjectInstance(Engine)
+                    value.Value = (JsValue)(new ObjectInstance(Engine)
                     {
                         Extensible = true
                     });
@@ -87,7 +87,7 @@ namespace Raven.Server.Documents.Patch
                         {
                             Value = fieldType.IsJson
                                 ? new JsonParser(_parent.Engine).Parse(values[0])
-                                : new JsValue(values[0]);
+                                : (JsValue)(values[0]);
                         }
                         else
                         {
@@ -134,21 +134,21 @@ namespace Raven.Server.Documents.Patch
                     case BlittableJsonToken.Null:
                         return JsValue.Null;
                     case BlittableJsonToken.Boolean:
-                        return new JsValue((bool)value);
+                        return (JsValue)((bool)value);
                     case BlittableJsonToken.Integer:
                         owner.RecordNumericFieldType(key, BlittableJsonToken.Integer);
-                        return new JsValue((long)value);
+                        return (JsValue)((long)value);
                     case BlittableJsonToken.LazyNumber:
                         owner.RecordNumericFieldType(key, BlittableJsonToken.LazyNumber);
-                        return new JsValue((double)(LazyNumberValue)value);
+                        return (JsValue)((double)(LazyNumberValue)value);
                     case BlittableJsonToken.String:
-                        return new JsValue(((LazyStringValue)value).ToString());
+                        return (JsValue)(((LazyStringValue)value).ToString());
                     case BlittableJsonToken.CompressedString:
-                        return new JsValue(((LazyCompressedStringValue)value).ToString());
+                        return (JsValue)(((LazyCompressedStringValue)value).ToString());
                     case BlittableJsonToken.StartObject:
                         Changed = true;
                         _parent.MarkChanged();
-                        return new JsValue(new BlittableObjectInstance(owner.Engine,
+                        return (JsValue)(new BlittableObjectInstance(owner.Engine,
                             owner,
                             (BlittableJsonReaderObject)value, null, null));
                     case BlittableJsonToken.StartArray:
@@ -192,7 +192,7 @@ namespace Raven.Server.Documents.Patch
             return OwnValues.Remove(propertyName);
         }
 
-        public override PropertyDescriptor GetOwnProperty(string propertyName)
+        public override IPropertyDescriptor GetOwnProperty(string propertyName)
         {
             if (OwnValues.TryGetValue(propertyName, out var val))
                 return val;
@@ -201,11 +201,11 @@ namespace Raven.Server.Documents.Patch
             return val;
         }
 
-        public override IEnumerable<KeyValuePair<string, PropertyDescriptor>> GetOwnProperties()
+        public override IEnumerable<KeyValuePair<string, IPropertyDescriptor>> GetOwnProperties()
         {
             foreach (var value in OwnValues)
             {
-                yield return new KeyValuePair<string, PropertyDescriptor>(value.Key, value.Value);
+                yield return new KeyValuePair<string, IPropertyDescriptor>(value.Key, value.Value);
             }
             if (Blittable == null)
                 yield break;
@@ -215,7 +215,7 @@ namespace Raven.Server.Documents.Patch
                     continue;
                 if (OwnValues.ContainsKey(prop))
                     continue;
-                yield return new KeyValuePair<string, PropertyDescriptor>(
+                yield return new KeyValuePair<string, IPropertyDescriptor>(
                     prop,
                     GetOwnProperty(prop)
                     );

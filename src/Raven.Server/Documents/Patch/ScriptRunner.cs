@@ -206,7 +206,7 @@ namespace Raven.Server.Documents.Patch
                     var epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
                     var jsTime = doc.LastModified.Value.Subtract(epoch)
                         .TotalMilliseconds;
-                    return new JsValue(jsTime);
+                    return (JsValue)(jsTime);
                 }
                 return Undefined.Instance;
             }
@@ -352,7 +352,7 @@ namespace Raven.Server.Documents.Patch
                 if (DebugMode)
                     DebugActions.DeleteDocument.Add(id);
                 var result = _database.DocumentsStorage.Delete(_context, id, changeVector);
-                return new JsValue(result != null);
+                return (JsValue)(result != null);
             }
 
             private void AssertNotReadOnly()
@@ -381,7 +381,7 @@ namespace Raven.Server.Documents.Patch
                 var objectInstance = args[0].AsObject();
 
                 if (objectInstance is BlittableObjectInstance doc && doc.DocumentId != null)
-                    return new JsValue(doc.DocumentId);
+                    return (JsValue)(doc.DocumentId);
 
                 var jsValue = objectInstance.Get(Constants.Documents.Metadata.Key);
                 // search either @metadata.@id or @id
@@ -514,7 +514,7 @@ namespace Raven.Server.Documents.Patch
 
                 var asTimeSpan = new TimeSpan(ticks);
 
-                return new JsValue(asTimeSpan.ToString());
+                return (JsValue)(asTimeSpan.ToString());
             }
 
             private static JsValue StartsWith(JsValue self, JsValue[] args)
@@ -522,7 +522,7 @@ namespace Raven.Server.Documents.Patch
                 if (args.Length != 2 || args[0].IsString() == false || args[1].IsString() == false)
                     throw new InvalidOperationException("startsWith(text, contained) must be called with two string paremters");
 
-                return new JsValue(args[0].AsString().StartsWith(args[1].AsString(), StringComparison.OrdinalIgnoreCase));
+                return (JsValue)(args[0].AsString().StartsWith(args[1].AsString(), StringComparison.OrdinalIgnoreCase));
             }
 
             private static JsValue EndsWith(JsValue self, JsValue[] args)
@@ -530,7 +530,7 @@ namespace Raven.Server.Documents.Patch
                 if (args.Length != 2 || args[0].IsString() == false || args[1].IsString() == false)
                     throw new InvalidOperationException("endsWith(text, contained) must be called with two string paremters");
 
-                return new JsValue(args[0].AsString().EndsWith(args[1].AsString(), StringComparison.OrdinalIgnoreCase));
+                return (JsValue)(args[0].AsString().EndsWith(args[1].AsString(), StringComparison.OrdinalIgnoreCase));
             }
 
             private JsValue Regex(JsValue self, JsValue[] args)
@@ -540,7 +540,7 @@ namespace Raven.Server.Documents.Patch
 
                 var regex = _regexCache.Get(args[1].AsString());
 
-                return new JsValue(regex.IsMatch(args[0].AsString()));
+                return (JsValue)(regex.IsMatch(args[0].AsString()));
             }
 
             private JsValue CmpXchangeInternal(string key)
@@ -679,7 +679,7 @@ namespace Raven.Server.Documents.Patch
                 if (o == null)
                     return Undefined.Instance;
                 if (o is long lng)
-                    return new JsValue(lng);
+                    return (JsValue)(lng);
                 if (o is List<object> list)
                 {
                     var jsArray = ScriptEngine.Array.Construct(Array.Empty<JsValue>());
@@ -701,19 +701,19 @@ namespace Raven.Server.Documents.Patch
                 if (o is ObjectInstance j)
                     return j;
                 if (o is bool b)
-                    return new JsValue(b);
+                    return (JsValue)(b);
                 if (o is int integer)
-                    return new JsValue(integer);
+                    return (JsValue)(integer);
                 if (o is double dbl)
-                    return new JsValue(dbl);
+                    return (JsValue)(dbl);
                 if (o is string s)
-                    return new JsValue(s);
+                    return (JsValue)(s);
                 if (o is LazyStringValue ls)
-                    return new JsValue(ls.ToString());
+                    return (JsValue)(ls.ToString());
                 if(o is LazyCompressedStringValue lcs)
-                    return new JsValue(lcs.ToString());
+                    return (JsValue)(lcs.ToString());
                 if (o is LazyNumberValue lnv)
-                    return new JsValue(lnv.ToString());
+                    return (JsValue)(lnv.ToString());
                 if (o is JsValue js)
                     return js;
                 throw new InvalidOperationException("No idea how to convert " + o + " to JsValue");

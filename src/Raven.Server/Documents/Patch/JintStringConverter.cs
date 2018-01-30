@@ -13,7 +13,7 @@ namespace Raven.Server.Documents.Patch
                 value is LazyStringValue || 
                 value is LazyCompressedStringValue)
             {
-                result = new JsValue(value.ToString());
+                result = (JsValue)(value.ToString());
                 return true;
             }
 

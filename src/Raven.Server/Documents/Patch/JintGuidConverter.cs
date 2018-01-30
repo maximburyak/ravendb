@@ -10,7 +10,7 @@ namespace Raven.Server.Documents.Patch
         {
             if (value is Guid guid)
             {
-                result = new JsValue(guid.ToString());
+                result = (JsValue)(guid.ToString());
                 return true;
             }
 
