@@ -68,7 +68,7 @@ namespace Raven.Client.Http
 
         private ServerNode _topologyTakenFromNode;
 
-        public HttpClient HttpClient { get; }
+        public HttpClient HttpClient { get; private set; }
 
         public IReadOnlyList<ServerNode> TopologyNodes => _nodeSelector?.Topology.Nodes;
 
@@ -163,11 +163,31 @@ namespace Raven.Client.Http
                 GlobalHttpClientWithCompression :
                 GlobalHttpClientWithoutCompression;
 
-            HttpClient = httpClientCache.TryGetValue(thumbprint, out var lazyClient) == false ?
-                GetCachedOrCreateHttpClient(httpClientCache) : lazyClient.Value;
+           
+
+            _serverCallbackRWLock.EnterReadLock();
+            try
+            {
+                _updateHttpHandlerDelegate = UpdateHttpClient;
+                _liveClients.TryAdd(new WeakReference<Action>(_updateHttpHandlerDelegate), null);
+                _updateHttpHandlerDelegate();
+            }
+            finally
+            {
+                _serverCallbackRWLock.ExitReadLock();
+            }
+
 
             TopologyHash = Http.TopologyHash.GetTopologyHash(initialUrls);
+
+            void UpdateHttpClient()
+            {
+                HttpClient = httpClientCache.TryGetValue(thumbprint, out var lazyClient) == false ?
+                                GetCachedOrCreateHttpClient(httpClientCache) : lazyClient.Value;
+            }
         }
+
+      
 
         public static RequestExecutor Create(string[] initialUrls, string databaseName, X509Certificate2 certificate, DocumentConventions conventions)
         {
@@ -1166,22 +1186,16 @@ namespace Raven.Client.Http
                 throw new NotSupportedException("HttpClient implementation for the current platform does not support request compression.");
             }
 
-            if (PlatformDetails.RunningOnMacOsx)
+            var serverCallBack = _serverCertificateCustomValidationCallback;
+            if (serverCallBack != null)
             {
-                var callback = ServerCertificateCustomValidationCallback;
-                if (callback != null)
+                if (PlatformDetails.RunningOnMacOsx)
+                {
                     throw new PlatformNotSupportedException("On Mac OSX, is it not possible to register to ServerCertificateCustomValidationCallback because of https://github.com/dotnet/corefx/issues/9728");
-            }
-            else
-            {
-                try
+                }
+                else
                 {
                     httpMessageHandler.ServerCertificateCustomValidationCallback += OnServerCertificateCustomValidationCallback;
-                }
-                catch (PlatformNotSupportedException)
-                {
-                    // The user can set the following manually:
-                    // ServicePointManager.ServerCertificateValidationCallback += OnServerCertificateCustomValidationCallback;
                 }
             }
 
@@ -1245,11 +1259,60 @@ namespace Raven.Client.Http
                 throw new InvalidOperationException("Client certificate " + certificate.FriendlyName + " must be defined with the following 'Enhanced Key Usage': Client Authentication (Oid 1.3.6.1.5.5.7.3.2)");
         }
 
-        public static event Func<HttpRequestMessage, X509Certificate2, X509Chain, SslPolicyErrors, bool> ServerCertificateCustomValidationCallback;
+        private static Func<HttpRequestMessage, X509Certificate2, X509Chain, SslPolicyErrors, bool> _serverCertificateCustomValidationCallback;
+        private static ConcurrentDictionary<WeakReference<Action>, object> _liveClients = new ConcurrentDictionary<WeakReference<Action>, object>();
+        private Action _updateHttpHandlerDelegate;// we need this to hold a reference to the action as long as the executer is alive
+        private static readonly ReaderWriterLockSlim _serverCallbackRWLock = new ReaderWriterLockSlim();
+
+        public static event Func<HttpRequestMessage, X509Certificate2, X509Chain, SslPolicyErrors, bool> ServerCertificateCustomValidationCallback
+        {
+            add
+            {
+                _serverCallbackRWLock.EnterWriteLock();
+                try
+                {
+                    _serverCertificateCustomValidationCallback += value;
+                    ForceUpdateOfAllHttpClients();
+                }
+                finally
+                {
+                    _serverCallbackRWLock.ExitWriteLock();
+                }
+            }
+            remove
+            {
+                _serverCertificateCustomValidationCallback -= value;
+                ForceUpdateOfAllHttpClients();
+            }
+        }
+
+        private static void ForceUpdateOfAllHttpClients()
+        {
+            // change for the server callback requires changing http handlers
+            GlobalHttpClientWithCompression.Clear();
+            GlobalHttpClientWithoutCompression.Clear();
+            foreach (var client in _liveClients.Keys)
+            {
+                if (client.TryGetTarget(out var updateHttpClient))
+                {
+                    try
+                    {
+                        updateHttpClient();
+                    }
+                    catch (Exception)
+                    {
+                        // we can't really handle this, so we won't
+                        // try, this should be very odd behavior
+                    }
+                }
+                else
+                    _liveClients.TryRemove(client, out _);
+            }
+        }
 
         private static bool OnServerCertificateCustomValidationCallback(HttpRequestMessage msg, X509Certificate2 cert, X509Chain chain, SslPolicyErrors errors)
         {
-            var onServerCertificateCustomValidationCallback = ServerCertificateCustomValidationCallback;
+            var onServerCertificateCustomValidationCallback = _serverCertificateCustomValidationCallback;
             if (onServerCertificateCustomValidationCallback == null)
                 return errors == SslPolicyErrors.None;
             return onServerCertificateCustomValidationCallback(msg, cert, chain, errors);

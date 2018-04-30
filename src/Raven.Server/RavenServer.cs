@@ -28,6 +28,7 @@ using Raven.Client;
 using Raven.Client.Exceptions.Database;
 using Raven.Client.Exceptions.Security;
 using Raven.Client.Extensions;
+using Raven.Client.Http;
 using Raven.Client.Json.Converters;
 using Raven.Client.ServerWide.Operations.Certificates;
 using Raven.Client.ServerWide.Tcp;
@@ -54,6 +55,7 @@ using Sparrow;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
 using Sparrow.Logging;
+using Sparrow.Platform;
 
 namespace Raven.Server
 {
@@ -218,6 +220,25 @@ namespace Raven.Server
                 var serverAddressesFeature = _webHost.ServerFeatures.Get<IServerAddressesFeature>();
                 WebUrl = GetWebUrl(serverAddressesFeature.Addresses.First()).TrimEnd('/');
 
+                if (Certificate.Certificate != null)
+                {
+                    try
+                    {
+                        AssertServerCanContactItselfWhenAuthIsOn(Certificate.Certificate)
+                            .IgnoreUnobservedExceptions()
+                            // here we wait a bit, just enough so for normal servers
+                            // we'll be successful, but not enough to hang the server
+                            // startup if there is some issue talking to the node because
+                            // of firewall, ssl issues, etc. 
+                            .Wait(250);
+                    }
+                    catch (Exception)
+                    {
+                        // the .Wait() can throw as well, so we'll ignore any
+                        // errors here, it all goes to the log anyway
+                    }
+                }
+
                 if (Logger.IsInfoEnabled)
                     Logger.Info($"Initialized Server... {WebUrl}");
 
@@ -235,6 +256,83 @@ namespace Raven.Server
                     Logger.Operations("Could not start server", e);
                 throw;
             }
+        }
+
+        private async Task AssertServerCanContactItselfWhenAuthIsOn(X509Certificate2 certificateCertificate)
+        {
+            var url = Configuration.Core.PublicServerUrl.HasValue ? Configuration.Core.PublicServerUrl.Value.UriValue : WebUrl;
+
+            try
+            {
+                using (var httpMessageHandler = new HttpClientHandler())
+                {
+                    httpMessageHandler.SslProtocols = SslProtocols.Tls12;
+
+                    if (Logger.IsOperationsEnabled)
+                        Logger.Operations($"During server initialization, validating that the server can authenticate with itself using {url}.");
+
+                    // Using the server certificate as a client certificate to test if we can talk to ourselves
+                    httpMessageHandler.ClientCertificates.Add(certificateCertificate);
+                    using (var client = new HttpClient(httpMessageHandler)
+                    {
+                        BaseAddress = new Uri(url),
+                        Timeout = TimeSpan.FromSeconds(15)
+                    })
+                    {
+                        await client.GetAsync("/setup/alive");
+                    }
+                }
+            }
+            catch(Exception e)
+            {
+                if (Logger.IsOperationsEnabled)
+                    Logger.Operations($"Server failed to contact itself @ {url}. " +
+                                      $"This can happen if PublicServerUrl is not the same as the domain in the certificate or you have other certificate errors. " +
+                                      "Trying again, this time with a ServerCertificateCustomValidationCallback which allows connections with the same certificate.", e);
+
+                try
+                {
+                    using (var httpMessageHandler = new HttpClientHandler())
+                    {
+                        // Try again, this time the callback should allow the connection.
+                        httpMessageHandler.ServerCertificateCustomValidationCallback += CertificateCallback;
+                        httpMessageHandler.SslProtocols = SslProtocols.Tls12;
+                        httpMessageHandler.ClientCertificates.Add(certificateCertificate);
+
+                        using (var client = new HttpClient(httpMessageHandler)
+                        {
+                            BaseAddress = new Uri(url),
+                            Timeout = TimeSpan.FromSeconds(15)
+                        })
+                        {
+                            var response = await client.GetAsync("/setup/alive");
+
+                            if (response.IsSuccessStatusCode)
+                            {
+                                // It worked, let's register this callback globally in the RequestExecutor
+                                RequestExecutor.ServerCertificateCustomValidationCallback += CertificateCallback;
+                            }
+
+                            if (Logger.IsOperationsEnabled)
+                                Logger.Operations($"Successfull connection with ServerCertificateCustomValidationCallback to {url}.");
+                        }
+                    }
+                }
+                catch (Exception e2)
+                {
+                    if (Logger.IsOperationsEnabled)
+                        Logger.Operations($"Server failed to contact itself @ {url} even though ServerCertificateCustomValidationCallback allows connections with the same certificate.", e2);
+                }
+            }
+        }
+
+        bool CertificateCallback(HttpRequestMessage message, X509Certificate2 certificate2, X509Chain chain, SslPolicyErrors errors)
+        {
+            if (errors == SslPolicyErrors.None || errors == SslPolicyErrors.RemoteCertificateChainErrors) // self-signed is acceptable
+                return true;
+
+            // We trust ourselves
+            return certificate2?.Thumbprint == Certificate?.Certificate?.Thumbprint;
         }
 
         private Task _currentRefreshTask = Task.CompletedTask;
