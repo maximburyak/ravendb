@@ -135,7 +135,7 @@ namespace Raven.Server
                             {
                                 if (Logger.IsInfoEnabled)
                                     Logger.Info("Unable to OpenPipe. Admin Channel will not be available to the user", e);
-                                Console.WriteLine("Warning: Admin Channel is not available");
+                                Console.WriteLine("Warning: Admin Channel is not available:" + e);
                             }
 
                             server.Initialize();
@@ -261,13 +261,8 @@ namespace Raven.Server
 
         private static bool RunInteractive(RavenServer server)
         {
-            var configuration = server.Configuration;
-
             //stop dumping logs
             LoggingSource.Instance.DisableConsoleLogging();
-
-            // set log mode to the previous original mode:
-            LoggingSource.Instance.SetupLogMode(configuration.Logs.Mode, configuration.Logs.Path.FullPath);
 
             return new RavenCli().Start(server, Console.Out, Console.In, true);
         }

@@ -77,6 +77,9 @@ namespace Raven.Server
         public readonly ServerStore ServerStore;
 
         private IWebHost _webHost;
+
+        private IWebHost _redirectingWebHost;
+
         private readonly Logger _tcpLogger;
 
         public event Action AfterDisposal;
@@ -237,6 +240,12 @@ namespace Raven.Server
                         // the .Wait() can throw as well, so we'll ignore any
                         // errors here, it all goes to the log anyway
                     }
+
+                    var port = new Uri(Configuration.Core.ServerUrls[0]).Port;
+                    if (port == 443 && Configuration.Security.DisableHttpsRedirection == false)
+                    {
+                        RedirectsHttpTrafficToHttps();
+                    }
                 }
 
                 if (Logger.IsInfoEnabled)
@@ -255,6 +264,37 @@ namespace Raven.Server
                 if (Logger.IsOperationsEnabled)
                     Logger.Operations("Could not start server", e);
                 throw;
+            }
+        }
+
+        private void RedirectsHttpTrafficToHttps()
+        {
+            try
+            {
+                var serverUrlsToRedirect = Configuration.Core.ServerUrls.Select(serverUrl => new Uri(serverUrl))
+                    .Select(newUri => new UriBuilder(newUri)
+                    {
+                        Scheme = "http",
+                        Port = 80
+                    }.Uri.ToString())
+                    .ToArray();
+
+                if (Logger.IsOperationsEnabled)
+                    Logger.Operations($"HTTPS is on. Setting up a new web host to redirect incoming HTTP traffic on port 80 to HTTPS on port 443. The new web host is listening to { string.Join(", ", serverUrlsToRedirect) }");
+
+                _redirectingWebHost = new WebHostBuilder()
+                    .UseKestrel()
+                    .UseUrls(serverUrlsToRedirect)
+                    .UseStartup<RedirectServerStartup>()
+                    .UseShutdownTimeout(TimeSpan.FromSeconds(1))
+                    .Build();
+
+                _redirectingWebHost.Start();
+            }
+            catch (Exception e)
+            {
+                if (Logger.IsOperationsEnabled)
+                    Logger.Operations("Failed to create a webhost to redirect HTTP traffic to HTTPS", e);
             }
         }
 
@@ -1469,6 +1509,7 @@ namespace Raven.Server
                 ea.Execute(() => _refreshClusterCertificate?.Dispose());
                 ea.Execute(() => AdminConsolePipe?.Dispose());
                 ea.Execute(() => LogStreamPipe?.Dispose());
+                ea.Execute(() => _redirectingWebHost?.Dispose());
                 ea.Execute(() => _webHost?.Dispose());
                 ea.Execute(() => _tcpContextPool?.Dispose());
                 if (_tcpListenerStatus != null)

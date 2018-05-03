@@ -1463,11 +1463,6 @@ namespace Raven.Server.ServerWide
             return ((now - maxLastWork).TotalMinutes > 5) || ((now - database.LastIdleTime).TotalMinutes > 10);
         }
 
-        public void SecedeFromCluster()
-        {
-            Engine.Bootstrap(GetNodeHttpServerUrl(), forNewCluster: true);
-        }
-
         public Task<(long Index, object Result)> WriteDatabaseRecordAsync(
             string databaseName, DatabaseRecord record, long? index,
             Dictionary<string, ExpandoObject> databaseValues = null, bool isRestore = false)
