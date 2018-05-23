@@ -15,7 +15,7 @@ namespace Raven.Server.NotificationCenter
 {
     public class NotificationCenter : NotificationsBase, IDisposable
     {
-        private static readonly Logger Logger = LoggingSource.Instance.GetLogger<NotificationCenter>("NotificationCenter");
+        private static readonly Logger Logger = LoggingSource.Instance.GetLogger<NotificationCenter>("Server");
         private readonly NotificationsStorage _notificationsStorage;
         private readonly string _database;
         private readonly CancellationToken _shutdown;
@@ -82,7 +82,7 @@ namespace Raven.Server.NotificationCenter
                     if (existing?.PostponedUntil > SystemTime.UtcNow)
                         return;
                 }
-                
+
                 foreach (var watcher in Watchers)
                 {
                     // serialize to avoid race conditions

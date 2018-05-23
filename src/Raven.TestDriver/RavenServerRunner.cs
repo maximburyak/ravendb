@@ -7,6 +7,19 @@ namespace Raven.TestDriver
 {
     internal class RavenServerRunner<TLocator> where TLocator : RavenServerLocator
     {
+        internal static string _emptySettingsFilePath;
+
+        internal static string EmptySettingsFilePath
+        {
+            get
+            {
+                if (string.IsNullOrEmpty(_emptySettingsFilePath))
+                    _emptySettingsFilePath = Path.Combine(Path.GetTempPath(), "testdriver.settings.json");
+
+                return _emptySettingsFilePath;
+            }
+        }
+
         public static Process Run(TLocator locator)
         {
             var processStartInfo = GetProcessStartInfo(locator);
@@ -18,7 +31,7 @@ namespace Raven.TestDriver
             catch (Exception e)
             {
                 result?.Kill();
-                throw new InvalidOperationException("Unble to execute server." + Environment.NewLine +
+                throw new InvalidOperationException("Unable to execute server." + Environment.NewLine +
                     "Command was: " + Environment.NewLine +
                     (processStartInfo.WorkingDirectory ?? Directory.GetCurrentDirectory()) + "> "
                     + processStartInfo.FileName + " " + processStartInfo.Arguments
@@ -35,11 +48,14 @@ namespace Raven.TestDriver
                 throw new FileNotFoundException("Server file was not found", locator.ServerPath);
             }
 
+            File.WriteAllText(EmptySettingsFilePath, "{}");
+
             using (var currentProcess = Process.GetCurrentProcess())
             {
                 var commandArguments = new List<string>
                 {
                     locator.CommandArguments,
+                    $"-c {EmptySettingsFilePath}",
                     "--ServerUrl=http://127.0.0.1:0",
                     "--RunInMemory=true",
                     "--Testing.ParentProcessId=" + currentProcess.Id,

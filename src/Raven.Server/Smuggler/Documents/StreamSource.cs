@@ -92,18 +92,20 @@ namespace Raven.Server.Smuggler.Documents
             }
 
             var type = ReadType();
-            if (type == null)
-                return DatabaseItemType.None;
-
-            while (type.Equals("Transformers", StringComparison.OrdinalIgnoreCase))
+            var dbItemType = GetType(type);
+            while (dbItemType == DatabaseItemType.Unknown)
             {
+                var msg = $"You are trying to import items of type '{type}' which is unknown or not supported in 4.0. Ignoring items.";
+                if (_log.IsOperationsEnabled)
+                    _log.Operations(msg);
+                _result.AddWarning(msg);
+
                 SkipArray();
                 type = ReadType();
-                if (type == null)
-                    break;
+                dbItemType = GetType(type);
             }
 
-            return GetType(type);
+            return dbItemType;
         }
 
         public DatabaseRecord GetDatabaseRecord()
@@ -704,9 +706,17 @@ namespace Raven.Server.Smuggler.Documents
                     builder.Reset();
 
                     if (data.TryGet(Constants.Documents.Metadata.Key, out BlittableJsonReaderObject metadata) &&
-                        metadata.TryGet(DocumentItem.ExportDocumentType.Key, out string type) &&
-                        type == DocumentItem.ExportDocumentType.Attachment)
+                        metadata.TryGet(DocumentItem.ExportDocumentType.Key, out string type))
                     {
+                        if (type != DocumentItem.ExportDocumentType.Attachment)
+                        {
+                            var msg = $"Ignoring an item of type `{type}`. " + data;
+                            if (_log.IsOperationsEnabled)
+                                _log.Operations(msg);
+                            _result.AddWarning(msg);
+                            continue;
+                        }
+
                         if (attachments == null)
                             attachments = new List<DocumentItem.AttachmentStream>();
 
@@ -730,8 +740,12 @@ namespace Raven.Server.Smuggler.Documents
                                     [Constants.Documents.Metadata.Collection] = CollectionName.HiLoCollection
                                 }
                             };
-                            data = context.ReadObject(data, modifier.Id, BlittableJsonDocumentBuilder.UsageMode.ToDisk);
                         }
+                    }
+
+                    if (data.Modifications != null)
+                    {
+                        data = context.ReadObject(data, modifier.Id, BlittableJsonDocumentBuilder.UsageMode.ToDisk);
                     }
 
                     _result.LegacyLastDocumentEtag = modifier.LegacyEtag;
@@ -803,7 +817,18 @@ namespace Raven.Server.Smuggler.Documents
                         data.TryGet(nameof(DocumentTombstone.Collection), out tombstone.Collection) &&
                         data.TryGet(nameof(DocumentTombstone.LastModified), out tombstone.LastModified))
                     {
-                        tombstone.Type = Enum.Parse<DocumentTombstone.TombstoneType>(type);
+                        if (Enum.TryParse<DocumentTombstone.TombstoneType>(type, out var tombstoneType) == false)
+                        {
+                            var msg = $"Ignoring a tombstone of type `{type}` which is not supported in 4.0. ";
+                            if (_log.IsOperationsEnabled)
+                                _log.Operations(msg);
+
+                            _result.Tombstones.ErroredCount++;
+                            _result.AddWarning(msg);
+                            continue;
+                        }
+
+                        tombstone.Type = tombstoneType;
                         yield return tombstone;
                     }
                     else
@@ -1059,7 +1084,7 @@ namespace Raven.Server.Smuggler.Documents
             if (type.Equals("AttachmentsDeletions", StringComparison.OrdinalIgnoreCase))
                 return DatabaseItemType.LegacyAttachmentDeletions;
 
-            throw new InvalidOperationException("Got unexpected property name '" + type + "' on " + _parser.GenerateErrorState());
+            return DatabaseItemType.Unknown;
         }
 
         public void Dispose()

@@ -3,9 +3,9 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using Jint.Native;
 using Raven.Client.Documents.Operations;
+using Raven.Client.Exceptions;
 using Raven.Server.ServerWide.Context;
 using Sparrow.Json;
-using Voron.Exceptions;
 
 namespace Raven.Server.Documents.Patch
 {
@@ -58,6 +58,11 @@ namespace Raven.Server.Documents.Patch
             _database = database;
             _isTest = isTest;
             _debugMode = debugMode;
+
+            if(string.IsNullOrEmpty(id) || id.EndsWith('/') || id.EndsWith('|'))
+            {
+                throw new ArgumentException("The id argument has invalid value: '" + id + "'", "id");
+            }
         }
 
         public PatchResult PatchResult { get; private set; }

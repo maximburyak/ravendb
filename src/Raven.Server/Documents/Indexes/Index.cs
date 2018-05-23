@@ -24,6 +24,7 @@ using Raven.Server.Documents.Includes;
 using Raven.Server.Documents.Indexes.Auto;
 using Raven.Server.Documents.Indexes.MapReduce;
 using Raven.Server.Documents.Indexes.MapReduce.Auto;
+using Raven.Server.Documents.Indexes.MapReduce.Exceptions;
 using Raven.Server.Documents.Indexes.MapReduce.Static;
 using Raven.Server.Documents.Indexes.Persistence.Lucene;
 using Raven.Server.Documents.Indexes.Static;
@@ -978,6 +979,10 @@ namespace Raven.Server.Documents.Indexes
                                 {
                                     HandleCriticalErrors(scope, cie);
                                 }
+                                catch (ExcessiveNumberOfReduceErrorsException enre)
+                                {
+                                    HandleExcessiveNumberOfReduceErrors(scope, enre);
+                                }
                                 catch (OperationCanceledException)
                                 {
                                     // We are here only in the case of indexing process cancellation.
@@ -1239,6 +1244,20 @@ namespace Raven.Server.Documents.Indexes
             SetState(IndexState.Error);
         }
 
+        internal void HandleExcessiveNumberOfReduceErrors(IndexingStatsScope stats, ExcessiveNumberOfReduceErrorsException e)
+        {
+            if (_logger.IsOperationsEnabled)
+                _logger.Operations($"Erroring index due to excessive number of reduce errors '{Name}'.", e);
+
+            stats.AddExcessiveNumberOfReduceErrors(e);
+
+            if (State == IndexState.Error)
+                return;
+
+            _errorStateReason = e.Message;
+            SetState(IndexState.Error);
+        }
+
         private void HandleOutOfMemoryException(OutOfMemoryException oome, IndexingStatsScope scope)
         {
             try
@@ -1298,9 +1317,8 @@ namespace Raven.Server.Documents.Indexes
             if (_logger.IsOperationsEnabled)
                 _logger.Operations($"Data corruption occurred for '{Name}'.", e);
 
-            var corruptionStats = DocumentDatabase.ServerStore.DatabasesLandlord.CatastrophicFailureHandler.GetStats(_environment.DbId);
-
-            if (corruptionStats.WillUnloadDatabase)
+            if (DocumentDatabase.ServerStore.DatabasesLandlord.CatastrophicFailureHandler.TryGetStats(_environment.DbId, out var corruptionStats) &&
+                corruptionStats.WillUnloadDatabase)
             {
                 // it can be a transient error, we are going to unload the database and do not error the index yet
                 // let's stop the indexing thread
@@ -1921,7 +1939,18 @@ namespace Raven.Server.Documents.Indexes
             AssertIndexState();
 
             if (State == IndexState.Idle)
-                SetState(IndexState.Normal);
+            {
+                try
+                {
+                    SetState(IndexState.Normal);
+                }
+                catch (Exception e)
+                {
+                    if (_logger.IsOperationsEnabled)
+                        _logger.Operations($"Failed to change state of '{Name}' index from {IndexState.Idle} to {IndexState.Normal}. Proceeding with running the query.",
+                            e);
+                }
+            }
 
             MarkQueried(DocumentDatabase.Time.GetUtcNow());
 
@@ -2458,7 +2487,7 @@ namespace Raven.Server.Documents.Indexes
 
             var indexEtagBytes = stackalloc byte[length];
 
-            CalculateIndexEtagInternal(indexEtagBytes, isStale, documentsContext, indexContext);
+            CalculateIndexEtagInternal(indexEtagBytes, isStale, State, documentsContext, indexContext);
 
             unchecked
             {
@@ -2470,11 +2499,12 @@ namespace Raven.Server.Documents.Indexes
         {
             var length = sizeof(long) * 4 * Collections.Count + // last document etag, last tombstone etag and last mapped etags per collection
                          sizeof(int) + // definition hash
-                         1; // isStale
+                         1 + // isStale
+                         1; // index state
             return length;
         }
 
-        protected unsafe void CalculateIndexEtagInternal(byte* indexEtagBytes, bool isStale,
+        protected unsafe void CalculateIndexEtagInternal(byte* indexEtagBytes, bool isStale, IndexState indexState,
             DocumentsOperationContext documentsContext, TransactionOperationContext indexContext)
         {
 
@@ -2498,6 +2528,8 @@ namespace Raven.Server.Documents.Indexes
             *(int*)indexEtagBytes = Definition.GetHashCode();
             indexEtagBytes += sizeof(int);
             *indexEtagBytes = isStale ? (byte)0 : (byte)1;
+            indexEtagBytes += sizeof(byte);
+            *indexEtagBytes = (byte)indexState;
         }
 
         public long GetIndexEtag()

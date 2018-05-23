@@ -6,17 +6,16 @@ using System.Dynamic;
 using System.IO;
 using System.Linq;
 using System.Net.Sockets;
-using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Raven.Client;
-using Raven.Client.Documents.Conventions;
 using Raven.Client.Documents.Operations.Backups;
 using Raven.Client.Documents.Operations.Configuration;
 using Raven.Client.Documents.Session;
+using Raven.Client.Exceptions;
 using Raven.Client.Exceptions.Cluster;
 using Raven.Client.Exceptions.Database;
 using Raven.Client.Exceptions.Security;
@@ -423,7 +422,7 @@ namespace Raven.Server.ServerWide
                         // Explict removing of the node means that we modify the replication factor
                         record.Topology.ReplicationFactor = record.Topology.Count;
                     }
-                    var updated = EntityToBlittable.ConvertEntityToBlittable(record, DocumentConventions.Default, context);
+                    var updated = EntityToBlittable.ConvertCommandToBlittable(record, context);
 
                     UpdateValue(index, items, lowerKey, key, updated);
                 }
@@ -536,7 +535,7 @@ namespace Raven.Server.ServerWide
                     return;
                 }
 
-                var updated = EntityToBlittable.ConvertEntityToBlittable(databaseRecord, DocumentConventions.Default, context);
+                var updated = EntityToBlittable.ConvertCommandToBlittable(databaseRecord, context);
 
                 UpdateValue(index, items, lowerKey, key, updated);
             }
@@ -590,7 +589,7 @@ namespace Raven.Server.ServerWide
                 var items = context.Transaction.InnerTransaction.OpenTable(ItemsSchema, Items);
                 using (Slice.From(context.Allocator, "db/" + addDatabaseCommand.Name, out Slice valueName))
                 using (Slice.From(context.Allocator, "db/" + addDatabaseCommand.Name.ToLowerInvariant(), out Slice valueNameLowered))
-                using (var databaseRecordAsJson = EntityToBlittable.ConvertEntityToBlittable(addDatabaseCommand.Record, DocumentConventions.Default, context))
+                using (var databaseRecordAsJson = EntityToBlittable.ConvertCommandToBlittable(addDatabaseCommand.Record, context))
                 {
                     if (addDatabaseCommand.RaftCommandIndex != null)
                     {
@@ -644,7 +643,7 @@ namespace Raven.Server.ServerWide
                 var key = $"{Helpers.ClusterStateMachineValuesPrefix(databaseName)}{keyValue.Key}";
                 using (Slice.From(context.Allocator, key, out Slice databaseValueName))
                 using (Slice.From(context.Allocator, key.ToLowerInvariant(), out Slice databaseValueNameLowered))
-                using (var value = EntityToBlittable.ConvertEntityToBlittable(keyValue.Value, DocumentConventions.Default, context))
+                using (var value = EntityToBlittable.ConvertCommandToBlittable(keyValue.Value, context))
                 {
                     UpdateValue(index, items, databaseValueNameLowered, databaseValueName, value);
                 }
@@ -907,7 +906,7 @@ namespace Raven.Server.ServerWide
                         return;
                     }
 
-                    var updatedDatabaseBlittable = EntityToBlittable.ConvertEntityToBlittable(databaseRecord, DocumentConventions.Default, context);
+                    var updatedDatabaseBlittable = EntityToBlittable.ConvertCommandToBlittable(databaseRecord, context);
                     UpdateValue(index, items, valueNameLowered, valueName, updatedDatabaseBlittable);
                 }
             }
@@ -1374,7 +1373,19 @@ namespace Raven.Server.ServerWide
                         }
                     }
                 }
-                return (stream, () => tcpClient.Client.Disconnect(false));
+                return (stream, () =>
+                {
+                    {
+                        try
+                        {
+                            tcpClient.Client.Disconnect(false);
+                        }
+                        catch (ObjectDisposedException ode)
+                        {
+                            //Happens, we don't really care at this point
+                        }
+                    }
+                });
             }
             catch (Exception)
             {

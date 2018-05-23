@@ -34,25 +34,27 @@ namespace Raven.Client.Documents.Queries
 
         public void Write(long? l)
         {
-            if (l == null)
-                return;
-            Write(l.Value);
+            if (l != null)
+                Write(l.Value);
+            else
+                Write("null-long");
         }
 
         public void Write(float? f)
         {
-            if (f == null)
-                return;
-            Write(f.Value);
+            if (f != null)
+                Write(f.Value);
+            else
+                Write("null-float");
         }
 
         public void Write(int? i)
         {
-            if (i == null)
-                return;
-            Write(i.Value);
+            if (i != null)
+                Write(i.Value);
+            else
+                Write("null-int");
         }
-
 
         public void Write(int i)
         {
@@ -61,20 +63,24 @@ namespace Raven.Client.Documents.Queries
 
         public void Write(bool b)
         {
-            if (b)
-                _buffer.WriteByte(1);
+            _buffer.WriteByte(b ? (byte)1 : (byte)2);
         }
 
         public void Write(bool? b)
         {
             if (b != null)
                 _buffer.WriteByte(b.Value ? (byte)1 : (byte)2);
+            else
+                Write("null-bool");
         }
 
         public void Write(string s)
         {
             if (s == null)
+            {
+                Write("null-string");
                 return;
+            }
             fixed (char* pQ = s)
                 _buffer.Write((byte*)pQ, s.Length * sizeof(char));
         }
@@ -82,7 +88,11 @@ namespace Raven.Client.Documents.Queries
         public void Write(string[] s)
         {
             if (s == null)
+            {
+                Write("null-str-array");
                 return;
+            }
+            Write(s.Length);
             for (int i = 0; i < s.Length; i++)
             {
                 Write(s[i]);
@@ -92,7 +102,11 @@ namespace Raven.Client.Documents.Queries
         public void Write(List<string> s)
         {
             if (s == null)
+            {
+                Write("null-list-str");
                 return;
+            }
+            Write(s.Count);
             for (int i = 0; i < s.Count; i++)
             {
                 Write(s[i]);
@@ -121,7 +135,11 @@ namespace Raven.Client.Documents.Queries
         public void Write(Parameters qp)
         {
             if (qp == null)
+            {
+                Write("null-params");
                 return;
+            }
+            Write(qp.Count);
             foreach (var kvp in qp)
             {
                 Write(kvp.Key);
@@ -157,7 +175,7 @@ namespace Raven.Client.Documents.Queries
             }
             else if (value == null)
             {
-                // write nothing
+                _buffer.WriteByte(0);
             }
             else if (value is DateTimeOffset dto)
             {
@@ -165,9 +183,17 @@ namespace Raven.Client.Documents.Queries
             }
             else if (value is IEnumerable e)
             {
+                bool hadValues = false;
                 var enumerator = e.GetEnumerator();
                 while (enumerator.MoveNext())
+                {
                     WriteParameterValue(enumerator.Current);
+                    hadValues = true;
+                }
+                if (hadValues == false)
+                {
+                    Write("empty-enumerator");
+                }
             }
             else
             {
@@ -179,7 +205,11 @@ namespace Raven.Client.Documents.Queries
         public void Write(Dictionary<string, string> qp)
         {
             if (qp == null)
+            {
+                Write("null-dic<string,string>");
                 return;
+            }
+            Write(qp.Count);
             foreach (var kvp in qp)
             {
                 Write(kvp.Key);

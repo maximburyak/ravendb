@@ -38,6 +38,7 @@ using Raven.Server.Smuggler.Migration;
 using Raven.Server.ServerWide.Commands;
 using Raven.Server.Smuggler.Documents;
 using Raven.Client.Extensions;
+using Raven.Client.ServerWide.Operations.Migration;
 using Raven.Server.Documents.Indexes;
 using Raven.Server.Documents.Indexes.Auto;
 using Raven.Server.Documents.PeriodicBackup.Restore;
@@ -54,7 +55,7 @@ namespace Raven.Server.Web.System
 {
     public class AdminDatabasesHandler : RequestHandler
     {
-        private static readonly Logger Logger = LoggingSource.Instance.GetLogger<AdminDatabasesHandler>("AdminDatabasesTasks");
+        private static readonly Logger Logger = LoggingSource.Instance.GetLogger<AdminDatabasesHandler>("Server");
 
         [RavenAction("/admin/databases", "GET", AuthorizationStatus.Operator)]
         public Task Get()
@@ -225,6 +226,8 @@ namespace Raven.Server.Web.System
                 var replicationFactor = GetIntValueQueryString("replicationFactor", required: false) ?? 0;
                 var json = context.ReadForDisk(RequestBodyStream(), name);
                 var databaseRecord = JsonDeserializationCluster.DatabaseRecord(json);
+                if (string.IsNullOrWhiteSpace(databaseRecord.DatabaseName))
+                    throw new ArgumentException("DatabaseName property has invalid value (null, empty or whitespace only)");
                 databaseRecord.DatabaseName = databaseRecord.DatabaseName.Trim();
 
                 if ((databaseRecord.Topology?.DynamicNodesDistribution ?? false) &&
@@ -560,7 +563,7 @@ namespace Raven.Server.Web.System
 
                 using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
                 {
-                    var blittable = EntityToBlittable.ConvertEntityToBlittable(restorePoints, DocumentConventions.Default, context);
+                    var blittable = EntityToBlittable.ConvertCommandToBlittable(restorePoints, context);
                     context.Write(writer, blittable);
                     writer.Flush();
                 }
@@ -1117,10 +1120,9 @@ namespace Raven.Server.Web.System
         [RavenAction("/admin/migrate/offline", "POST", AuthorizationStatus.ClusterAdmin)]
         public async Task MigrateDatabaseOffline()
         {
-            OfflineMigrationConfiguration configuration;
-
             ServerStore.EnsureNotPassive();
 
+            OfflineMigrationConfiguration configuration;
             using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
             {
                 var migrationConfiguration = await context.ReadForMemoryAsync(RequestBodyStream(), "migration-configuration");
@@ -1187,6 +1189,7 @@ namespace Raven.Server.Web.System
                         {
                             // send some initial progess so studio can open details 
                             result.AddInfo("Starting migration");
+                            result.AddInfo($"Path of temporary export file: {tmpFile}");
                             onProgress(overallProgress);
 
                             while (true)

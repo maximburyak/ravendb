@@ -16,15 +16,17 @@ using Raven.Client;
 using Raven.Client.Documents.Commands;
 using Raven.Client.Documents.Commands.Batches;
 using Raven.Client.Documents.Operations;
+using Raven.Client.Exceptions;
 using Raven.Server.Documents.Includes;
 using Raven.Server.Documents.Patch;
 using Raven.Server.Json;
 using Raven.Server.NotificationCenter.Notifications.Details;
 using Raven.Server.Routing;
 using Raven.Server.ServerWide.Context;
+using Sparrow;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
-using ConcurrencyException = Voron.Exceptions.ConcurrencyException;
+using Sparrow.Utils;
 using DeleteDocumentCommand = Raven.Server.Documents.TransactionCommands.DeleteDocumentCommand;
 using PatchRequest = Raven.Server.Documents.Patch.PatchRequest;
 
@@ -56,6 +58,54 @@ namespace Raven.Server.Documents.Handlers
             }
         }
 
+
+        [RavenAction("/databases/*/docs/size", "GET", AuthorizationStatus.ValidUser)]
+        public Task GetDocSize()
+        {
+            var id = GetQueryStringValueAndAssertIfSingleAndNotEmpty("id");
+
+            using (ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
+            using (context.OpenReadTransaction())
+            {
+                var document = Database.DocumentsStorage.GetDocumentMetrics(context, id);
+                if (document == null)
+                {
+                    HttpContext.Response.StatusCode = (int)HttpStatusCode.NotFound;
+                    return Task.CompletedTask;
+                }
+                using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
+                {
+                    writer.WriteStartObject();
+
+                    writer.WritePropertyName("Id");
+                    writer.WriteString(id);
+                    writer.WriteComma();
+
+                    writer.WritePropertyName("ActualSize");
+                    writer.WriteInteger(document.Value.ActualSize);
+                    writer.WriteComma();
+
+
+                    writer.WritePropertyName("HumaneActualSize");
+                    writer.WriteString(Sizes.Humane(document.Value.ActualSize));
+                    writer.WriteComma();
+
+
+                    writer.WritePropertyName("AllocatedSize");
+                    writer.WriteInteger(document.Value.AllocatedSize);
+                    writer.WriteComma();
+
+                    writer.WritePropertyName("HumaneAllocatedSize");
+                    writer.WriteString(Sizes.Humane(document.Value.AllocatedSize));
+
+                    writer.WriteEndObject();
+                }
+
+                return Task.CompletedTask;
+
+            }
+        }
+
         [RavenAction("/databases/*/docs", "GET", AuthorizationStatus.ValidUser)]
         public async Task Get()
         {
@@ -70,7 +120,7 @@ namespace Raven.Server.Documents.Handlers
                 else
                     await GetDocumentsAsync(context, metadataOnly);
 
-                
+
             }
         }
 
@@ -185,9 +235,9 @@ namespace Raven.Server.Documents.Handlers
 
             HttpContext.Response.Headers[Constants.Headers.Etag] = "\"" + actualEtag + "\"";
 
-            int numberOfResults = 0;            
-         
-            numberOfResults = await WriteDocumentsJsonAsync(context, metadataOnly, documents, includes, numberOfResults);         
+            int numberOfResults = 0;
+
+            numberOfResults = await WriteDocumentsJsonAsync(context, metadataOnly, documents, includes, numberOfResults);
 
             AddPagingPerformanceHint(PagingOperationType.Documents, nameof(GetDocumentsByIdAsync), HttpContext.Request.QueryString.Value, numberOfResults, documents.Count, sw.ElapsedMilliseconds);
         }
@@ -216,7 +266,7 @@ namespace Raven.Server.Documents.Handlers
                 await writer.OuterFlushAsync();
             }
             return numberOfResults;
-        }        
+        }
 
         [RavenAction("/databases/*/docs", "DELETE", AuthorizationStatus.ValidUser)]
         public async Task Delete()
@@ -425,13 +475,18 @@ namespace Raven.Server.Documents.Handlers
 
     public class MergedPutCommand : TransactionOperationsMerger.MergedTransactionCommand, IDisposable
     {
-        private readonly string _id;
+        private string _id;
         private readonly LazyStringValue _expectedChangeVector;
         private readonly BlittableJsonReaderObject _document;
         private readonly DocumentDatabase _database;
 
         public ExceptionDispatchInfo ExceptionDispatchInfo;
         public DocumentsStorage.PutOperationResults PutResult;
+
+        public static string GenerateNonConflictingId(DocumentDatabase database, string prefix)
+        {
+            return prefix + database.DocumentsStorage.GenerateNextEtag().ToString("D19") + "-" + Guid.NewGuid().ToBase64Unpadded();
+        }
 
         public MergedPutCommand(BlittableJsonReaderObject doc, string id, LazyStringValue changeVector, DocumentDatabase database)
         {
@@ -446,6 +501,21 @@ namespace Raven.Server.Documents.Handlers
             try
             {
                 PutResult = _database.DocumentsStorage.Put(context, _id, _expectedChangeVector, _document);
+            }
+            catch (Voron.Exceptions.VoronConcurrencyErrorException)
+            {
+                // RavenDB-10581 - If we have a concurrency error on "doc-id/" 
+                // this means that we have existing values under the current etag
+                // we'll generate a new (random) id for them. 
+
+                // The TransactionMerger will re-run us when we ask it to as a 
+                // separate transaction
+                if (_id?.EndsWith('/') == true)
+                {
+                    _id = GenerateNonConflictingId(_database, _id);
+                    RetryOnError = true;
+                }
+                throw;
             }
             catch (ConcurrencyException e)
             {

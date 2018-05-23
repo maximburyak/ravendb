@@ -18,6 +18,7 @@ using Raven.Server.Documents.Indexes.Auto;
 using Raven.Server.Documents.Indexes.Errors;
 using Raven.Server.Documents.Queries;
 using Raven.Server.Exceptions;
+using Raven.Server.NotificationCenter.Notifications;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 using Raven.Server.Utils;
@@ -975,23 +976,23 @@ namespace FastTests.Server.Documents.Indexing.Auto
                         now.Add(TimeSpan.FromSeconds(1))
                            .Add(database.Configuration.Indexing.TimeToWaitBeforeMarkingAutoIndexAsIdle.AsTimeSpan);
 
-                database.IndexStore.RunIdleOperations(); // nothing should happen here, because age will be greater than 2x TimeToWaitBeforeMarkingAutoIndexAsIdle but less than TimeToWaitBeforeDeletingAutoIndexMarkedAsIdle
+                database.IndexStore.RunIdleOperations(); // should not remove anything, age will be greater than 2x TimeToWaitBeforeMarkingAutoIndexAsIdle but less than TimeToWaitBeforeDeletingAutoIndexMarkedAsIdle
 
                 index1 = database.IndexStore.GetIndex(index1.Name);
                 index2 = database.IndexStore.GetIndex(index2.Name);
 
-                Assert.Equal(IndexPriority.Normal, index1.Definition.Priority);
+                Assert.Equal(IndexState.Idle, index1.State);
                 Assert.Equal(IndexState.Idle, index2.State);
 
                 now = database.Time.GetUtcNow();
                 database.Time.UtcDateTime = () => now.Add(database.Configuration.Indexing.TimeToWaitBeforeDeletingAutoIndexMarkedAsIdle.AsTimeSpan);
 
-                database.IndexStore.RunIdleOperations(); // this will delete index2
+                database.IndexStore.RunIdleOperations(); // this will delete indexes
 
                 index1 = database.IndexStore.GetIndex(index1.Name);
                 index2 = database.IndexStore.GetIndex(index2.Name);
 
-                Assert.Equal(IndexPriority.Normal, index1.Definition.Priority);
+                Assert.Null(index1);
                 Assert.Null(index2);
             }
         }
@@ -1084,6 +1085,17 @@ namespace FastTests.Server.Documents.Indexing.Auto
                 Assert.IsType<FaultyInMemoryIndex>(index);
                 Assert.Equal(IndexState.Error, index.State);
                 Assert.Equal(indexName, index.Name);
+
+                using (database.NotificationCenter.GetStored(out var items))
+                {
+                    var alerts = items.ToList();
+                    Assert.Equal(1, alerts.Count);
+
+                    var readAlert = alerts[0].Json;
+                    
+                    Assert.Equal(AlertType.IndexStore_IndexCouldNotBeOpened.ToString(), readAlert[nameof(AlertRaised.AlertType)].ToString());
+                    Assert.Contains(indexName, readAlert[nameof(AlertRaised.Message)].ToString());
+                }
             }
         }
 

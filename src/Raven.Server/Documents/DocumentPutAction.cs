@@ -11,9 +11,9 @@ using Sparrow.Json;
 using Sparrow.Json.Parsing;
 using Voron;
 using Voron.Data.Tables;
-using Voron.Exceptions;
 using System.Linq;
 using Raven.Client.Documents.Operations.Revisions;
+using Raven.Client.Exceptions;
 using Sparrow;
 using static Raven.Server.Documents.DocumentsStorage;
 
@@ -59,7 +59,7 @@ namespace Raven.Server.Documents
             {
                 var collectionName = _documentsStorage.ExtractCollectionName(context, document);
                 var table = context.Transaction.InnerTransaction.OpenTable(DocsSchema, collectionName.GetTableName(CollectionTableType.Documents));
-            
+
                 var oldValue = default(TableValueReader);
                 if (knownNewId == false)
                 {
@@ -83,7 +83,7 @@ namespace Raven.Server.Documents
                     // null - means, don't care, don't check
                     // "" / empty - means, must be new
                     // anything else - must match exactly
-                    if (expectedChangeVector != null) 
+                    if (expectedChangeVector != null)
                     {
                         var oldChangeVector = TableValueToChangeVector(context, (int)DocumentsTable.ChangeVector, ref oldValue);
                         if (string.Compare(expectedChangeVector, oldChangeVector, StringComparison.Ordinal) != 0)
@@ -140,9 +140,9 @@ namespace Raven.Server.Documents
                         AttachmentsStorage.AssertAttachments(document, flags);
 #endif
                     }
-                    
-                    if (nonPersistentFlags.Contain(NonPersistentDocumentFlags.FromReplication) == false && 
-                        (flags.Contain(DocumentFlags.Resolved) || 
+
+                    if (nonPersistentFlags.Contain(NonPersistentDocumentFlags.FromReplication) == false &&
+                        (flags.Contain(DocumentFlags.Resolved) ||
                         _documentDatabase.DocumentsStorage.RevisionsStorage.Configuration != null
                         ))
                     {
@@ -281,7 +281,7 @@ namespace Raven.Server.Documents
                 }
 
                 if (lastChar == '/')
-                {                    
+                {
                     string nodeTag = _documentDatabase.ServerStore.NodeTag;
 
                     // PERF: we are creating an string and mutating it for performance reasons.

@@ -101,7 +101,6 @@ namespace Raven.Server.Documents.Operations
             long id,
             OperationCancelToken token = null)
         {
-
             var operationState = new OperationState
             {
                 Status = OperationStatus.InProgress
@@ -190,7 +189,7 @@ namespace Raven.Server.Documents.Operations
 
         private void RaiseNotifications(OperationStatusChange change, Operation operation)
         {
-            var operationChanged = OperationChanged.Create(_name,change.OperationId, operation.Description, change.State, operation.Killable);
+            var operationChanged = OperationChanged.Create(_name, change.OperationId, operation.Description, change.State, operation.Killable);
 
             operation.NotifyCenter(operationChanged, x => _notificationCenter.Add(x));
 
@@ -242,6 +241,8 @@ namespace Raven.Server.Documents.Operations
 
         public ICollection<Operation> GetActive() => _active.Values;
 
+        public bool HasActive => _active.Count > 0;
+
         public class Operation
         {
             private readonly TimeSpan _throttleTime = TimeSpan.FromSeconds(1);
@@ -278,7 +279,7 @@ namespace Raven.Server.Documents.Operations
 
             public void NotifyCenter(OperationChanged notification, Action<OperationChanged> addToNotificationCenter)
             {
-                if (!ShouldThrottleMessage(notification))
+                if (ShouldThrottleMessage(notification) == false)
                 {
                     addToNotificationCenter(notification);
                     return;
@@ -394,7 +395,10 @@ namespace Raven.Server.Documents.Operations
             CertificateGeneration,
             
             [Description("Migration from v3.x")]
-            MigrationFromLegacyData
+            MigrationFromLegacyData,
+
+            [Description("Database Backup")]
+            DatabaseBackup,
         }
     }
 }

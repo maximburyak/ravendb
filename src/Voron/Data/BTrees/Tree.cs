@@ -200,6 +200,11 @@ namespace Voron.Data.BTrees
 
             return true;
         }
+        public void Add(Slice key, long value)
+        {
+            using (DirectAdd(key, sizeof(long), out byte* ptr))
+                *(long*)ptr = value;
+        }
 
         public void Add(Slice key, Stream value)
         {
@@ -408,7 +413,7 @@ namespace Voron.Data.BTrees
 
         private static void ThrowConcurrencyException()
         {
-            throw new ConcurrencyException("Value already exists, but requested NewOnly");
+            throw new VoronConcurrencyErrorException("Value already exists, but requested NewOnly");
         }
 
         public struct DirectAddScope : IDisposable

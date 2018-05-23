@@ -245,7 +245,7 @@ namespace Raven.Client.Documents.Linq
                                                 "All Binary Expressions inside a Where clause should be between a field and a constant value. " +
                                                 $"`{expression.Left}` and `{expression.Right}` are both fields.");
             }
-          
+
         }
 
         private void VisitAndAlso(BinaryExpression andAlso)
@@ -692,12 +692,26 @@ The recommended method is to use full text search (mark the field as Analyzed an
                 return;
             }
             var memberInfo = GetMember(expression.Left);
-            var value = GetValueFromExpression(expression.Right, GetMemberType(memberInfo));
+            var memberType = GetMemberType(memberInfo);
+            var value = GetValueFromExpression(expression.Right, memberType);
+            var fieldName = GetFieldNameForRangeQuery(memberInfo, value);
+
+            if (ShouldExcludeNullTypes(memberType))
+            {
+                _documentQuery.OpenSubclause();
+            }
 
             _documentQuery.WhereGreaterThan(
-                GetFieldNameForRangeQuery(memberInfo, value),
+                fieldName,
                 value,
                 _insideExact);
+
+            if (ShouldExcludeNullTypes(memberType))
+            {
+                _documentQuery.AndAlso();
+                _documentQuery.WhereNotEquals(fieldName, null, _insideExact);
+                _documentQuery.CloseSubclause();
+            }
         }
 
         private void VisitGreaterThanOrEqual(BinaryExpression expression)
@@ -709,13 +723,31 @@ The recommended method is to use full text search (mark the field as Analyzed an
             }
 
             var memberInfo = GetMember(expression.Left);
+            var memberType = GetMemberType(memberInfo);
 
-            var value = GetValueFromExpression(expression.Right, GetMemberType(memberInfo));
+            var value = GetValueFromExpression(expression.Right, memberType);
+            var fieldName = GetFieldNameForRangeQuery(memberInfo, value);
 
+            if (ShouldExcludeNullTypes(memberType))
+            {
+                _documentQuery.OpenSubclause();
+
+            }
             _documentQuery.WhereGreaterThanOrEqual(
-                GetFieldNameForRangeQuery(memberInfo, value),
+                fieldName,
                 value,
                 _insideExact);
+            if (ShouldExcludeNullTypes(memberType))
+            {
+                _documentQuery.AndAlso();
+                _documentQuery.WhereNotEquals(fieldName, null, _insideExact);
+                _documentQuery.CloseSubclause();
+            }
+        }
+
+        private static bool ShouldExcludeNullTypes(Type memberType)
+        {
+            return memberType.GetTypeInfo().IsValueType && Nullable.GetUnderlyingType(memberType) != null;
         }
 
         private void VisitLessThan(BinaryExpression expression)
@@ -726,12 +758,26 @@ The recommended method is to use full text search (mark the field as Analyzed an
                 return;
             }
             var memberInfo = GetMember(expression.Left);
-            var value = GetValueFromExpression(expression.Right, GetMemberType(memberInfo));
+            var memberType = GetMemberType(memberInfo);
+            var value = GetValueFromExpression(expression.Right, memberType);
+            var fieldName = GetFieldNameForRangeQuery(memberInfo, value);
+
+            if (ShouldExcludeNullTypes(memberType))
+            {
+                _documentQuery.OpenSubclause();
+            }
 
             _documentQuery.WhereLessThan(
-                GetFieldNameForRangeQuery(memberInfo, value),
+                fieldName,
                 value,
                 _insideExact);
+
+            if (ShouldExcludeNullTypes(memberType))
+            {
+                _documentQuery.AndAlso();
+                _documentQuery.WhereNotEquals(fieldName, null, _insideExact);
+                _documentQuery.CloseSubclause();
+            }
         }
 
         private void VisitLessThanOrEqual(BinaryExpression expression)
@@ -742,14 +788,25 @@ The recommended method is to use full text search (mark the field as Analyzed an
                 return;
             }
             var memberInfo = GetMember(expression.Left);
+            var memberType = GetMemberType(memberInfo);
 
-
-            var value = GetValueFromExpression(expression.Right, GetMemberType(memberInfo));
+            var value = GetValueFromExpression(expression.Right, memberType);
+            var fieldName = GetFieldNameForRangeQuery(memberInfo, value);
+            if (ShouldExcludeNullTypes(memberType))
+            {
+                _documentQuery.OpenSubclause();
+            }
 
             _documentQuery.WhereLessThanOrEqual(
-                GetFieldNameForRangeQuery(memberInfo, value),
+                fieldName,
                 value,
                 _insideExact);
+            if (ShouldExcludeNullTypes(memberType))
+            {
+                _documentQuery.AndAlso();
+                _documentQuery.WhereNotEquals(fieldName, null, _insideExact);
+                _documentQuery.CloseSubclause();
+            }
         }
 
         private void VisitAny(MethodCallExpression expression)
@@ -1711,7 +1768,7 @@ The recommended method is to use full text search (mark the field as Analyzed an
                 if (!(newExpression.Arguments[index] is MemberExpression memberExpression))
                 {
                     throw new InvalidOperationException($"Illegal expression of type {newExpression.Arguments[index].GetType()} " +
-                                                        $"in GroupBy clause : {newExpression.Arguments[index]}." +  Environment.NewLine +
+                                                        $"in GroupBy clause : {newExpression.Arguments[index]}." + Environment.NewLine +
                                                         "You cannot do computation in group by dynamic query, " +
                                                         "you can group on properties / fields only.");
                 }

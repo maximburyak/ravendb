@@ -66,7 +66,7 @@ namespace Raven.Server
             UnhandledExceptions.Track(Logger);
         }
 
-        private static readonly Logger Logger = LoggingSource.Instance.GetLogger<RavenServer>("Raven/Server");
+        private static readonly Logger Logger = LoggingSource.Instance.GetLogger<RavenServer>("Server");
                 
         public readonly RavenConfiguration Configuration;
 
@@ -106,7 +106,7 @@ namespace Raven.Server
             ServerStore = new ServerStore(Configuration, this);
             Metrics = new MetricCounters();
 
-            _tcpLogger = LoggingSource.Instance.GetLogger<RavenServer>("<TcpServer>");
+            _tcpLogger = LoggingSource.Instance.GetLogger<RavenServer>("Server/TCP");
         }
 
         public TcpListenerStatus GetTcpServerStatus()
@@ -165,7 +165,7 @@ namespace Raven.Server
                     {
                         _httpsConnectionAdapter = new HttpsConnectionAdapter();
                         _httpsConnectionAdapter.SetCertificate(Certificate.Certificate);
-                        _refreshClusterCertificate = new Timer(RefreshClusterCertificate);
+                        _refreshClusterCertificate = new Timer(RefreshClusterCertificateTimerCallback);
                         var adapter = new AuthenticatingAdapter(this, _httpsConnectionAdapter);
 
                         foreach (var address in ListenEndpoints.Addresses)
@@ -350,11 +350,12 @@ namespace Raven.Server
                             if (response.IsSuccessStatusCode)
                             {
                                 // It worked, let's register this callback globally in the RequestExecutor
-                                RequestExecutor.ServerCertificateCustomValidationCallback += CertificateCallback;
+                                if(RequestExecutor.HasServerCertificateCustomValidationCallback == false)
+                                    RequestExecutor.ServerCertificateCustomValidationCallback += CertificateCallback;
                             }
 
                             if (Logger.IsOperationsEnabled)
-                                Logger.Operations($"Successfull connection with ServerCertificateCustomValidationCallback to {url}.");
+                                Logger.Operations($"Successful connection with ServerCertificateCustomValidationCallback to {url}.");
                         }
                     }
                 }
@@ -376,8 +377,13 @@ namespace Raven.Server
         }
 
         private Task _currentRefreshTask = Task.CompletedTask;
-        
-        public void RefreshClusterCertificate(object state)
+
+        public void RefreshClusterCertificateTimerCallback(object state)
+        {
+            RefreshClusterCertificate(state);
+        }
+
+        public bool RefreshClusterCertificate(object state)
         {
             // If the setup mode is anything but SetupMode.LetsEncrypt, we'll
             // check if the certificate changed and if so we'll update it immediately
@@ -392,7 +398,7 @@ namespace Raven.Server
             var currentCertificate = Certificate;
             if (currentCertificate.Certificate == null)
             {
-                return; // shouldn't happen, but just in case
+                return false; // shouldn't happen, but just in case
             }
 
             var forceRenew = state as bool? ?? false;
@@ -401,13 +407,16 @@ namespace Raven.Server
             if (currentRefreshTask.IsCompleted == false)
             {
                 _refreshClusterCertificate?.Change(TimeSpan.FromMinutes(1), TimeSpan.FromHours(1));
-                return;
+                return false;
             }
 
             var refreshCertificate = new Task(async () => { await DoActualCertificateRefresh(currentCertificate, forceRenew: forceRenew); });
             if (Interlocked.CompareExchange(ref _currentRefreshTask, currentRefreshTask, refreshCertificate) != currentRefreshTask)
-                return;
+                return false;
+
             refreshCertificate.Start();
+
+            return true;
         }
 
         private async Task DoActualCertificateRefresh(CertificateHolder currentCertificate, bool forceRenew = false)

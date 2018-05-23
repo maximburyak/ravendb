@@ -9,6 +9,8 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Net;
+using System.Net.Sockets;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Threading.Tasks;
@@ -63,6 +65,11 @@ namespace SlowTests.Authentication
                 email = command.Result.Email;
             }
 
+            var tcpListener = new TcpListener(IPAddress.Loopback, 0);
+            tcpListener.Start();
+            var port = ((IPEndPoint)tcpListener.LocalEndpoint).Port;
+            tcpListener.Stop();
+
             var setupInfo = new SetupInfo
             {
                 Domain = domain,
@@ -77,7 +84,7 @@ namespace SlowTests.Authentication
                 {
                     ["A"] = new SetupInfo.NodeInfo
                     {
-                        Port = 8080,
+                        Port = port,
                         Addresses = new List<string>
                         {
                             "127.0.0.1"
@@ -144,8 +151,9 @@ namespace SlowTests.Authentication
             DoNotReuseServer(customSettings);
             UseNewLocalServer();
 
-            // We need this here because we use a staging lets encrypt cert, the chain is not trusted.
-            RequestExecutor.ServerCertificateCustomValidationCallback += (msg, cert, chain, errors) => true;
+            // Note: because we use a staging lets encrypt cert, the chain is not trusted.
+            // It only works because in the TestBase ctor we do:
+            // RequestExecutor.ServerCertificateCustomValidationCallback += (msg, cert, chain, errors) => true;
 
             using (var store = GetDocumentStore(new Options
             {
@@ -168,7 +176,11 @@ namespace SlowTests.Authentication
 
                 await commands.RequestExecutor.ExecuteAsync(command, commands.Context);
 
-                mre.Wait(Debugger.IsAttached ? TimeSpan.FromMinutes(10) : TimeSpan.FromMinutes(2));
+                Assert.True(command.Result.Success, "ForceRenewCertCommand returned false");
+
+                var result = mre.Wait(Debugger.IsAttached ? TimeSpan.FromMinutes(10) : TimeSpan.FromMinutes(2));
+
+                Assert.True(result, "Waited too long for the cluster cert to be replaced");
 
                 Assert.NotEqual(firstServerCertThumbprint, Server.Certificate.Certificate.Thumbprint);
             }

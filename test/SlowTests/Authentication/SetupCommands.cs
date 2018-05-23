@@ -25,7 +25,7 @@ namespace SlowTests.Authentication
 
             public ClaimDomainCommand(DocumentConventions conventions, JsonOperationContext context, ClaimDomainInfo claimInfo)
             {
-                _payload = EntityToBlittable.ConvertEntityToBlittable(claimInfo, conventions, context);
+                _payload = EntityToBlittable.ConvertCommandToBlittable(claimInfo, context);
             }
 
             public override bool IsReadRequest => false;
@@ -52,7 +52,7 @@ namespace SlowTests.Authentication
             }
         }
 
-        private class ForceRenewCertCommand : RavenCommand<ClaimDomainResult>
+        private class ForceRenewCertCommand : RavenCommand<ForceRenewResult>
         {
             public ForceRenewCertCommand(DocumentConventions conventions, JsonOperationContext context)
             {
@@ -69,6 +69,13 @@ namespace SlowTests.Authentication
                     Method = HttpMethod.Post
                 };
             }
+
+            public override void SetResponse(JsonOperationContext context, BlittableJsonReaderObject response, bool fromCache)
+            {
+                if (response == null)
+                    ThrowInvalidResponse();
+                Result = JsonDeserializationClient.ForceRenewResult(response);
+            }
         }
 
         private class SetupLetsEncryptCommand : RavenCommand<byte[]>
@@ -77,7 +84,7 @@ namespace SlowTests.Authentication
 
             public SetupLetsEncryptCommand(DocumentConventions conventions, JsonOperationContext context, SetupInfo setupInfo)
             {
-                _payload = EntityToBlittable.ConvertEntityToBlittable(setupInfo, conventions, context);
+                _payload = EntityToBlittable.ConvertCommandToBlittable(setupInfo, context);
                 ResponseType = RavenCommandResponseType.Raw;
             }
 

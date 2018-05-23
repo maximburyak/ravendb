@@ -7,7 +7,6 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Raven.Client;
-using Raven.Client.Documents.Conventions;
 using Raven.Client.Documents.Operations.Configuration;
 using Raven.Client.Documents.Session;
 using Raven.Client.Documents.Smuggler;
@@ -493,18 +492,23 @@ namespace Raven.Server.Documents
             return databaseInfo;
         }
 
+        public DatabaseSummary GetDatabaseSummary(DocumentsOperationContext documentsContext)
+        {
+            return new DatabaseSummary
+            {
+                DocumentsCount = DocumentsStorage.GetNumberOfDocuments(),
+                AttachmentsCount = DocumentsStorage.AttachmentsStorage.GetNumberOfAttachments(documentsContext).AttachmentCount,
+                RevisionsCount = DocumentsStorage.RevisionsStorage.GetNumberOfRevisionDocuments(documentsContext),
+                ConflictsCount = DocumentsStorage.ConflictsStorage.GetNumberOfConflicts(documentsContext)
+            };
+        }
+
         public DatabaseSummary GetDatabaseSummary()
         {
             using (DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext documentsContext))
             using (documentsContext.OpenReadTransaction())
             {
-                return new DatabaseSummary
-                {
-                    DocumentsCount = DocumentsStorage.GetNumberOfDocuments(),
-                    AttachmentsCount = DocumentsStorage.AttachmentsStorage.GetNumberOfAttachments(documentsContext).AttachmentCount,
-                    RevisionsCount = DocumentsStorage.RevisionsStorage.GetNumberOfRevisionDocuments(documentsContext),
-                    ConflictsCount = DocumentsStorage.ConflictsStorage.GetNumberOfConflicts(documentsContext)
-                };
+                return GetDatabaseSummary(documentsContext);
             }
         }
 
@@ -588,8 +592,12 @@ namespace Raven.Server.Documents
             }
         }
 
-        public void FullBackupTo(string backupPath)
+        public SmugglerResult FullBackupTo(string backupPath, 
+            Action<(string Message, int FilesCount)> infoNotify = null, 
+            CancellationToken cancellationToken = default)
         {
+            SmugglerResult smugglerResult;
+
             using (var file = SafeFileStream.Create(backupPath, FileMode.Create))
             using (var package = new ZipArchive(file, ZipArchiveMode.Create, leaveOpen: true))
             using (_serverStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
@@ -614,12 +622,15 @@ namespace Raven.Server.Documents
                         var smuggler = new DatabaseSmuggler(this,
                             smugglerSource,
                             smugglerDestination,
-                            this.Time,
-                            options: databaseSmugglerOptionsServerSide);
+                            Time,
+                            options: databaseSmugglerOptionsServerSide,
+                            token: cancellationToken);
 
-                        smuggler.Execute();
+                        smugglerResult = smuggler.Execute();
                     }
                 }
+
+                infoNotify?.Invoke(("Backed up Database Record", 1));
 
                 zipArchiveEntry = package.CreateEntry(RestoreSettings.SettingsFileName, CompressionLevel.Optimal);
                 using (var zipStream = zipArchiveEntry.Open())
@@ -632,7 +643,7 @@ namespace Raven.Server.Documents
 
                     // save the database record
                     writer.WritePropertyName(nameof(RestoreSettings.DatabaseRecord));
-                    var databaseRecordBlittable = EntityToBlittable.ConvertEntityToBlittable(databaseRecord, DocumentConventions.Default, context);
+                    var databaseRecordBlittable = EntityToBlittable.ConvertCommandToBlittable(databaseRecord, context);
                     context.Write(writer, databaseRecordBlittable);
 
                     // save the database values (subscriptions, periodic backups statuses, etl states...)
@@ -644,6 +655,8 @@ namespace Raven.Server.Documents
                     var prefix = Helpers.ClusterStateMachineValuesPrefix(Name);
                     foreach (var keyValue in ClusterStateMachine.ReadValuesStartingWith(context, prefix))
                     {
+                        cancellationToken.ThrowIfCancellationRequested();
+
                         if (first == false)
                             writer.WriteComma();
 
@@ -660,10 +673,15 @@ namespace Raven.Server.Documents
                     writer.WriteEndObject();
                 }
 
-                BackupMethods.Full.ToFile(GetAllStoragesForBackup(), package);
+                infoNotify?.Invoke(("Backed up database values", 1));
+
+                BackupMethods.Full.ToFile(GetAllStoragesForBackup(), package, 
+                    infoNotify: infoNotify, cancellationToken: cancellationToken);
 
                 file.Flush(true); // make sure that we fully flushed to disk
             }
+
+            return smugglerResult;
         }
 
         /// <summary>

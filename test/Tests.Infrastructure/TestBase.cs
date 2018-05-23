@@ -6,7 +6,9 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Loader;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
@@ -82,6 +84,8 @@ namespace FastTests
 
             var maxNumberOfConcurrentTests = Math.Max(ProcessorInfo.ProcessorCount / 2, 2);
 
+            RequestExecutor.ServerCertificateCustomValidationCallback += (message, certificate2, arg3, arg4) => true;
+
             var fileInfo = new FileInfo(XunitConfigurationFile);
             if (fileInfo.Exists)
             {
@@ -127,10 +131,44 @@ namespace FastTests
                 if (_selfSignedCertFileName != null)
                     return _selfSignedCertFileName;
 
-                var certBytes = CertificateUtils.CreateSelfSignedCertificate(Environment.MachineName, "RavenTestsServer");
-                RequestExecutor.ServerCertificateCustomValidationCallback += (message, certificate2, arg3, arg4) => true;
-                var tempFileName = Path.GetTempFileName();
-                File.WriteAllBytes(tempFileName, certBytes);
+                var log = new StringBuilder();
+                byte[] certBytes;
+                try
+                {
+                    certBytes = CertificateUtils.CreateSelfSignedCertificate(Environment.MachineName, "RavenTestsServer", log);
+                }
+                catch (Exception e)
+                {
+                    throw new CryptographicException($"Unable to generate the test certificate for the machine '{Environment.MachineName}'. Log: {log}", e);
+                }
+
+                try
+                {
+                    new X509Certificate2(certBytes);
+                }
+                catch (Exception e)
+                {
+                    throw new CryptographicException($"Unable to load the test certificate for the machine '{Environment.MachineName}'. Log: {log}", e);
+                }
+
+                if (certBytes.Length == 0)
+                    throw new CryptographicException($"Test certificate length is 0 bytes. Machine: '{Environment.MachineName}', Log: {log}");
+                
+                string tempFileName = null;
+                try
+                {
+                    tempFileName = Path.GetTempFileName();
+                    File.WriteAllBytes(tempFileName, certBytes);
+                }
+                catch (Exception e)
+                {
+                    throw new InvalidOperationException("Failed to write the test certificate to a temp file." +
+                                                        $"tempFileName = {tempFileName}" +
+                                                        $"certBytes.Length = {certBytes.Length}" +
+                                                        $"MachineName = {Environment.MachineName}.", e);
+
+                }
+
                 _selfSignedCertFileName = tempFileName;
                 return tempFileName;
             }

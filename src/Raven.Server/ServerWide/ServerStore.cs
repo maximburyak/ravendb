@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Data.SqlClient;
 using System.Diagnostics;
 using System.Dynamic;
 using System.IO;
@@ -14,7 +13,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using Lucene.Net.Search;
 using Raven.Client;
-using Raven.Client.Documents.Conventions;
 using Raven.Client.Documents.Operations.ConnectionStrings;
 using Raven.Client.Documents.Operations.ETL;
 using Raven.Client.Documents.Operations.OngoingTasks;
@@ -58,7 +56,6 @@ using Sparrow.Json.Parsing;
 using Voron;
 using Sparrow.Logging;
 using Sparrow.LowMemory;
-using Sparrow.Platform;
 using Sparrow.Utils;
 
 namespace Raven.Server.ServerWide
@@ -495,7 +492,7 @@ namespace Raven.Server.ServerWide
             using (ContextPool.AllocateOperationContext(out JsonOperationContext ctx))
             {
                 // warm-up the json convertor, it takes about 250ms at first conversion.
-                EntityToBlittable.ConvertEntityToBlittable(new DatabaseRecord(), DocumentConventions.Default, ctx);
+                EntityToBlittable.ConvertCommandToBlittable(new DatabaseRecord(), ctx);
             }
 
             _timer = new Timer(IdleOperations, null, _frequencyToCheckForIdleDatabases, TimeSpan.FromDays(7));
@@ -1218,21 +1215,7 @@ namespace Raven.Server.ServerWide
                     command = new PutRavenConnectionStringCommand(JsonDeserializationCluster.RavenConnectionString(connectionString), databaseName);
                     break;
                 case ConnectionStringType.Sql:
-                    var connection = JsonDeserializationCluster.SqlConnectionString(connectionString);
-                    try
-                    {
-                        using (new SqlConnection(connection.ConnectionString))
-                        {
-                            // if connection string is invalid then the above 'new' will throw..
-                        }
-                    }
-                    catch (Exception e)
-                    {
-                        throw new Exception("Invalid connection string. " + e.Message);
-                    }
-
-                    command = new PutSqlConnectionStringCommand(connection, databaseName);
-
+                    command = new PutSqlConnectionStringCommand(JsonDeserializationCluster.SqlConnectionString(connectionString), databaseName);
                     break;
                 default:
                     throw new NotSupportedException($"Unknown connection string type: {connectionStringType}");
@@ -1417,11 +1400,13 @@ namespace Raven.Server.ServerWide
                             continue;
                         }
 
-
                         if (SystemTime.UtcNow - DatabasesLandlord.LastWork(idleDbInstance) < maxTimeDatabaseCanBeIdle)
                             continue;
 
                         if (idleDbInstance.Changes.Connections.Values.Any(x => x.IsDisposed == false && x.IsChangesConnectionOriginatedFromStudio == false))
+                            continue;
+
+                        if (idleDbInstance.Operations.HasActive)
                             continue;
 
                         DatabasesLandlord.UnloadDirectly(db);
@@ -1575,14 +1560,14 @@ namespace Raven.Server.ServerWide
             return (etag, id.Substring(0, id.Length - 1) + '/' + result, (long)result);
         }
 
-        public async Task<long> UpdateClusterIdentityAsync(string id, string databaseName, long newIdentity)
+        public async Task<long> UpdateClusterIdentityAsync(string id, string databaseName, long newIdentity, bool force)
         {
             var identities = new Dictionary<string, long>
             {
                 [id] = newIdentity
             };
 
-            var (_, result) = await SendToLeaderAsync(new UpdateClusterIdentityCommand(databaseName, identities));
+            var (_, result) = await SendToLeaderAsync(new UpdateClusterIdentityCommand(databaseName, identities, force));
 
             if (result == null)
             {

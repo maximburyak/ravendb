@@ -14,6 +14,11 @@ using Raven.Client.Exceptions.Documents.Indexes;
 
 namespace Raven.Client.ServerWide
 {
+    public class DatabaseRecordWithEtag : DatabaseRecord
+    {
+        public long Etag { get; set; }
+    }
+
     // The DatabaseRecord resides in EVERY server/node inside the cluster regardless if the db is actually within the node 
     public class DatabaseRecord
     {
@@ -157,6 +162,28 @@ namespace Raven.Client.ServerWide
                 throw new InvalidOperationException($"Can't use task name '{taskName}', there is already a SQL ETL task with that name");
             if (PeriodicBackups.Any(x => x.Name.Equals(taskName, StringComparison.OrdinalIgnoreCase)))
                 throw new InvalidOperationException($"Can't use task name '{taskName}', there is already a Periodic Backup task with that name");
+        }
+
+        internal string EnsureUniqueTaskName(string defaultTaskName)
+        {
+            var result = defaultTaskName;
+
+            int counter = 2;
+
+            while (true)
+            {
+                try
+                {
+                    EnsureTaskNameIsNotUsed(result);
+
+                    return result;
+                }
+                catch (Exception)
+                {
+                    result = $"{defaultTaskName} #{counter}";
+                    counter++;
+                }
+            }
         }
 
         public int GetIndexesCount()

@@ -18,9 +18,9 @@ using Raven.Server.Smuggler;
 using Sparrow;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
-using Voron.Exceptions;
 using Raven.Server.Documents.Replication;
 using System.Runtime.ExceptionServices;
+using Raven.Client.Exceptions;
 
 namespace Raven.Server.Documents.Handlers
 {
@@ -320,6 +320,25 @@ namespace Raven.Server.Documents.Handlers
                             try
                             {
                                 putResult = Database.DocumentsStorage.Put(context, cmd.Id, cmd.ChangeVector, cmd.Document);
+                            }
+                            catch (Voron.Exceptions.VoronConcurrencyErrorException)
+                            {
+                                // RavenDB-10581 - If we have a concurrency error on "doc-id/" 
+                                // this means that we have existing values under the current etag
+                                // we'll generate a new (random) id for them. 
+
+                                // The TransactionMerger will re-run us when we ask it to as a 
+                                // separate transaction
+                                for (; i < ParsedCommands.Count; i++)
+                                {
+                                    cmd = ParsedCommands.Array[ParsedCommands.Offset + i];
+                                    if (cmd.Type == CommandType.PUT && cmd.Id?.EndsWith('/') == true)
+                                    {
+                                        cmd.Id = MergedPutCommand.GenerateNonConflictingId(Database, cmd.Id);
+                                        RetryOnError = true;
+                                    }
+                                }
+                                throw;
                             }
                             catch (ConcurrencyException e) when (CanAvoidThrowingToMerger(e, i))
                             {
