@@ -579,11 +579,19 @@ namespace Raven.Database.Bundles.SqlReplication
                 // delete > doc
                 if (deletedDoc.Etag.CompareTo(docsToReplicate[change].Etag) > 0)
                 {
+                    if (Log.IsDebugEnabled)
+                    {
+                        Log.Debug($"Document with ID {deletedDoc.Key} won't be sql replicated because it's registered for deletion after the modification");
+                    }
                     // the delete came AFTER the doc, so we can remove the doc and just replicate the delete
                     docsToReplicate.RemoveAt(change);
                 }
                 else
                 {
+                    if (Log.IsDebugEnabled)
+                    {
+                        Log.Debug($"Deletion of document with ID {deletedDoc.Key} won't be sql replicated because it has been modified after it was registered for deletion");
+                    }
                     // the delete came BEFORE the doc, so we can remove the delte and just replicate the change
                     deletedDocs.RemoveAt(index);
                     index--;
@@ -599,9 +607,21 @@ namespace Raven.Database.Bundles.SqlReplication
                 var maybeLatest = docsToReplicate[docsToReplicate.Count - 1].Etag;
                 Debug.Assert(maybeLatest != null);
                 if (latest == null)
+                {
+                    if (Log.IsDebugEnabled)
+                    {
+                        Log.Debug($"Latest Etag will be set to {maybeLatest} because there were no documents to delete");
+                    }
                     return maybeLatest;
+                }
                 if (maybeLatest.CompareTo(latest) > 0)
+                {
+                    if (Log.IsDebugEnabled)
+                    {
+                        Log.Debug($"Latest Etag will be set to {maybeLatest} instead of {latest} because last modified etag is higher then last deleted one");
+                    }
                     return maybeLatest;
+                }                    
             }
 
             return latest;
