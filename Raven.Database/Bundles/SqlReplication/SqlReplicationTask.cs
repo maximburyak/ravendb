@@ -151,7 +151,7 @@ namespace Raven.Database.Bundles.SqlReplication
                     Database.WorkContext.ShouldNotifyAboutWork(() => "recorded a deleted document " + id);
             });
             if (Log.IsDebugEnabled)
-                Log.Debug(() => "recorded a deleted document " + id);
+                Log.Debug(() => "recorded a deleted document etag:" + metadata.Value<string>(Constants.MetadataEtagField) + " id: " + id);
         }
 
         private SqlReplicationStatus GetReplicationStatus()
@@ -266,15 +266,22 @@ namespace Raven.Database.Bundles.SqlReplication
 
                             foreach (var configToWorkOn in configsToWorkOn)
                             {
-                                var cfg = configToWorkOn;   
-                                
+                                var cfg = configToWorkOn;
+
                                 Database.TransactionalStorage.Batch(accessor =>
                                 {
-                                    deletedDocsByConfig[cfg] = accessor.Lists.Read(GetSqlReplicationDeletionName(cfg),
+                                    List<ListItem> deletedDocs = accessor.Lists.Read(GetSqlReplicationDeletionName(cfg),
                                             cfg.LastReplicatedEtag,
                                             latestEtag,
                                             MaxNumberOfDeletionsToReplicate + 1)
                                         .ToList();
+
+                                    if (Log.IsDebugEnabled)
+                                    {
+                                        var ids = string.Join(" , ", deletedDocs.Select(x => x.Key));
+                                        Log.Debug($"Documents found to delete from etag {cfg.LastReplicatedEtag } to etag {lastBatchEtag } in sql replication {cfg.Name}: {ids}");
+                                    }
+                                    deletedDocsByConfig[cfg] = deletedDocs;
                                 });
                             }
 
@@ -326,11 +333,17 @@ namespace Raven.Database.Bundles.SqlReplication
                                             .Where(x => lastReplicatedEtag.CompareTo(x.Etag) < 0); // haven't replicate the etag yet
 
                                         if (deletedDocs.Count >= MaxNumberOfDeletionsToReplicate + 1)
+                                        {
+                                            if (Log.IsDebugEnabled)
+                                            {
+                                                Log.Debug($"Found too much documents to replicate in sql replication task: {replicationConfig.Name}");
+                                            }
                                             docsToReplicate = docsToReplicate.Where(x => EtagUtil.IsGreaterThan(x.Etag, deletedDocs[deletedDocs.Count - 1].Etag) == false);
+                                        }
 
                                         var docsToReplicateAsList = docsToReplicate.ToList();
 
-                                        var currentLatestEtag = HandleDeletesAndChangesMerging(deletedDocs, docsToReplicateAsList);
+                                        var currentLatestEtag = HandleDeletesAndChangesMerging(deletedDocs, docsToReplicateAsList, replicationConfig);
                                         if (currentLatestEtag == null && itemsToReplicate.Count > 0 && docsToReplicateAsList.Count == 0)
                                             currentLatestEtag = lastBatchEtag;
 
@@ -340,6 +353,11 @@ namespace Raven.Database.Bundles.SqlReplication
                                         {
                                             if (deletedDocs.Count > 0)
                                             {
+                                                if (Log.IsDebugEnabled)
+                                                {
+                                                    Log.Debug($"Removing all replicated deletes prior to etag {deletedDocs[deletedDocs.Count - 1].Etag}");
+                                                }
+
                                                 Database.TransactionalStorage.Batch(accessor =>
                                                     accessor.Lists.RemoveAllBefore(GetSqlReplicationDeletionName(replicationConfig), deletedDocs[deletedDocs.Count - 1].Etag));
                                             }
@@ -563,7 +581,7 @@ namespace Raven.Database.Bundles.SqlReplication
             }
         }
 
-        private Etag HandleDeletesAndChangesMerging(List<ListItem> deletedDocs, List<ReplicatedDoc> docsToReplicate)
+        private Etag HandleDeletesAndChangesMerging(List<ListItem> deletedDocs, List<ReplicatedDoc> docsToReplicate, SqlReplicationConfigWithLastReplicatedEtag replicationConfig)
         {
             // This code is O(N^2), I don't like it, but we don't have a lot of deletes, and in order for it to be really bad
             // we need a lot of deletes WITH a lot of changes at the same time
@@ -581,7 +599,7 @@ namespace Raven.Database.Bundles.SqlReplication
                 {
                     if (Log.IsDebugEnabled)
                     {
-                        Log.Debug($"Document with ID {deletedDoc.Key} won't be sql replicated because it's registered for deletion after the modification");
+                        Log.Debug($"In task {replicationConfig.Name} Document with ID {deletedDoc.Key} won't be sql replicated because it's registered for deletion after the modification");
                     }
                     // the delete came AFTER the doc, so we can remove the doc and just replicate the delete
                     docsToReplicate.RemoveAt(change);
@@ -590,7 +608,7 @@ namespace Raven.Database.Bundles.SqlReplication
                 {
                     if (Log.IsDebugEnabled)
                     {
-                        Log.Debug($"Deletion of document with ID {deletedDoc.Key} won't be sql replicated because it has been modified after it was registered for deletion");
+                        Log.Debug($"In task {replicationConfig.Name} Deletion of document with ID {deletedDoc.Key} won't be sql replicated because it has been modified after it was registered for deletion");
                     }
                     // the delete came BEFORE the doc, so we can remove the delte and just replicate the change
                     deletedDocs.RemoveAt(index);
@@ -610,7 +628,7 @@ namespace Raven.Database.Bundles.SqlReplication
                 {
                     if (Log.IsDebugEnabled)
                     {
-                        Log.Debug($"Latest Etag will be set to {maybeLatest} because there were no documents to delete");
+                        Log.Debug($"In task {replicationConfig.Name} Latest Etag will be set to {maybeLatest} because there were no documents to delete");
                     }
                     return maybeLatest;
                 }
@@ -618,7 +636,7 @@ namespace Raven.Database.Bundles.SqlReplication
                 {
                     if (Log.IsDebugEnabled)
                     {
-                        Log.Debug($"Latest Etag will be set to {maybeLatest} instead of {latest} because last modified etag is higher then last deleted one");
+                        Log.Debug($"In task {replicationConfig.Name} Latest Etag will be set to {maybeLatest} instead of {latest} because last modified etag is higher then last deleted one");
                     }
                     return maybeLatest;
                 }                    
