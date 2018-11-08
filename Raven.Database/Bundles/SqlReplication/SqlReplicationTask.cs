@@ -93,7 +93,10 @@ namespace Raven.Database.Bundles.SqlReplication
 
                 if (notification.Type == DocumentChangeTypes.Delete)
                 {
-                    RecordDelete(notification.Id, metadata);
+                    using(Database.DocumentLock.Lock())
+                    {
+                        RecordDelete(notification.Id, metadata);
+                    }
                 }
 
                 if (!notification.Id.StartsWith("Raven/SqlReplication/Configuration/", StringComparison.InvariantCultureIgnoreCase)
