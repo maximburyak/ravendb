@@ -72,9 +72,8 @@ namespace Raven.Server.Documents.Queries
             private IEnumerator<Document> _inner;
             private int _innerCount;
             private readonly List<Slice> _ids;
-            private readonly Sort _sort;
             private readonly MapQueryResultRetriever _resultsRetriever;
-            private string _startsWith;
+            private readonly string _startsWith;
 
             public Enumerator(DocumentDatabase database, DocumentsStorage documents, FieldsToFetch fieldsToFetch, string collection, bool isAllDocsCollection,
                 IndexQueryServerSide query, DocumentsOperationContext context, IncludeDocumentsCommand includeDocumentsCommand, Reference<int> totalResults)
@@ -94,28 +93,6 @@ namespace Raven.Server.Documents.Queries
                 _resultsRetriever = new MapQueryResultRetriever(database, query, documents, context, fieldsToFetch, includeDocumentsCommand);
 
                 (_ids, _startsWith) = ExtractIdsFromQuery(query, context);
-
-                _sort = ExtractSortFromQuery(query);
-
-            }
-
-            private static Sort ExtractSortFromQuery(IndexQueryServerSide query)
-            {
-                if (query.Metadata.OrderBy == null)
-                    return null;
-
-                Debug.Assert(query.Metadata.OrderBy.Length == 1);
-
-                var randomField = query.Metadata.OrderBy[0];
-
-                Debug.Assert(randomField.OrderingType == OrderByFieldType.Random);
-
-                var customFieldName = randomField.Name;
-
-                if (string.IsNullOrEmpty(customFieldName))
-                    return new Sort(null);
-
-                return new Sort(customFieldName);
             }
 
             private (List<Slice>, string) ExtractIdsFromQuery(IndexQueryServerSide query, DocumentsOperationContext context)
@@ -214,6 +191,14 @@ namespace Raven.Server.Documents.Queries
                 IEnumerable<Document> documents;
                 if (_startsWith != null)
                 {
+                    var countQuery = false;
+
+                    if (_query.PageSize == 0)
+                    {
+                        countQuery = true;
+                        _query.PageSize = int.MaxValue;
+                    }
+
                     if (_isAllDocsCollection)
                     {
                         documents = _documents.GetDocumentsStartingWith(_context, _startsWith, null, null, null, _start, _query.PageSize);
@@ -221,6 +206,19 @@ namespace Raven.Server.Documents.Queries
                     else
                     {
                         documents = _documents.GetDocumentsStartingWith(_context, _startsWith, null, null, null, _start, _query.PageSize, _collection);
+                    }
+
+                    if (countQuery)
+                    {
+                        foreach (var document in documents)
+                        {
+                            using (document.Data)
+                                _totalResults.Value++;
+                        }
+
+                        documents = Enumerable.Empty<Document>();
+
+                        _query.PageSize = 0;
                     }
                 }
                 else if (_ids != null)
@@ -244,16 +242,8 @@ namespace Raven.Server.Documents.Queries
                     documents = _documents.GetDocumentsFrom(_context, _collection, 0, _start, _query.PageSize);
                     _totalResults.Value = (int)_documents.GetCollection(_collection, _context).Count;
                 }
-                return ApplySorting(documents);
-            }
 
-            private IEnumerable<Document> ApplySorting(IEnumerable<Document> documents)
-            {
-                if (_sort == null)
-                    return documents;
-
-                return documents
-                    .OrderBy(x => _sort.Next());
+                return documents;
             }
 
             private int Initialize()
@@ -273,7 +263,7 @@ namespace Raven.Server.Documents.Queries
                 while (true)
                 {
                     var count = 0;
-                    foreach (var document in ApplySorting(_documents.GetDocumentsFrom(_context, _collection, 0, start, _query.PageSize)))
+                    foreach (var document in _documents.GetDocumentsFrom(_context, _collection, 0, start, _query.PageSize))
                     {
                         count++;
 
@@ -317,23 +307,6 @@ namespace Raven.Server.Documents.Queries
                     {
                         id.Release(_context.Allocator);
                     }
-                }
-            }
-
-            private class Sort
-            {
-                private readonly Random _random;
-
-                public Sort(string field)
-                {
-                    _random = field == null ?
-                        new Random() :
-                        new Random(field.GetHashCode());
-                }
-
-                public int Next()
-                {
-                    return _random.Next();
                 }
             }
 

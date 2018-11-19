@@ -70,7 +70,7 @@ namespace Raven.Client.Documents.Smuggler
                 var command = new ExportCommand(_requestExecutor.Conventions, context, options, handleStreamResponse, operationId);
                 await _requestExecutor.ExecuteAsync(command, context, token: token).ConfigureAwait(false);
 
-                return new Operation(_requestExecutor, () => _store.Changes(), _requestExecutor.Conventions, operationId);
+                return new Operation(_requestExecutor, () => _store.Changes(_databaseName), _requestExecutor.Conventions, operationId);
             }
         }
 
@@ -92,13 +92,7 @@ namespace Raven.Client.Documents.Smuggler
         public async Task ImportIncrementalAsync(DatabaseSmugglerImportOptions options, string fromDirectory, CancellationToken cancellationToken = default)
         {
             var files = Directory.GetFiles(fromDirectory)
-                .Where(file =>
-                {
-                    var extension = Path.GetExtension(file);
-                    return
-                        Constants.Documents.PeriodicBackup.IncrementalBackupExtension.Equals(extension, StringComparison.OrdinalIgnoreCase) ||
-                        Constants.Documents.PeriodicBackup.FullBackupExtension.Equals(extension, StringComparison.OrdinalIgnoreCase);
-                })
+                .Where(BackupUtils.IsBackupFile)
                 .OrderBackups()
                 .ToArray();
 
@@ -162,7 +156,7 @@ namespace Raven.Client.Documents.Smuggler
                 var command = new ImportCommand(_requestExecutor.Conventions, context, options, stream, operationId);
                 await _requestExecutor.ExecuteAsync(command, context, token: token).ConfigureAwait(false);
 
-                return new Operation(_requestExecutor, () => _store.Changes(), _requestExecutor.Conventions, operationId);
+                return new Operation(_requestExecutor, () => _store.Changes(_databaseName), _requestExecutor.Conventions, operationId);
             }
         }
 

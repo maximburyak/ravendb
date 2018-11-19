@@ -6,7 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-#if NETSTANDARD1_5
+#if NETSTANDARD2_0
 using System.Runtime.Loader;
 #endif
 using System.Text;
@@ -23,6 +23,7 @@ using Raven.Client.Exceptions.Database;
 using Raven.Client.ServerWide;
 using Raven.Client.ServerWide.Operations;
 using Raven.Client.Util;
+using Sparrow.Platform;
 
 namespace Raven.TestDriver
 {
@@ -129,19 +130,37 @@ namespace Raven.TestDriver
 
             ReportInfo($"Starting global server: { _globalServerProcess.Id }");
 
+            var domainBind = false;
+
 #if NETSTANDARD1_3
             AppDomain.CurrentDomain.ProcessExit += (s, args) =>
             {
                 KillGlobalServerProcess();
             };
+
+            domainBind = true;
 #endif
 
-#if NETSTANDARD1_5
+#if NETSTANDARD2_0
             AssemblyLoadContext.Default.Unloading += c =>
             {
                 KillGlobalServerProcess();
             };
+
+            domainBind = true;
 #endif
+
+#if NET461
+            AppDomain.CurrentDomain.DomainUnload += (s, args) =>
+            {
+                KillGlobalServerProcess();
+            };
+
+            domainBind = true;
+#endif
+
+            if (domainBind == false)
+                throw new InvalidOperationException("Should not happen!");
 
             string url = null;
             var output = process.StandardOutput;
@@ -240,10 +259,7 @@ namespace Raven.TestDriver
                 }
             }
 
-            if (File.Exists(RavenServerRunner<TServerLocator>.EmptySettingsFilePath))
-            {
-                File.Delete(RavenServerRunner<TServerLocator>.EmptySettingsFilePath);
-            }
+            RavenServerRunner<TServerLocator>.CleanupTempFiles();
         }
 
         public void WaitForIndexing(IDocumentStore store, string database = null, TimeSpan? timeout = null)
@@ -304,8 +320,12 @@ namespace Raven.TestDriver
 
                 using (var session = store.OpenSession())
                 {
-                    if (session.Load<object>("Debug/Done") != null)
+                    if (session.Advanced.Exists("Debug/Done"))
+                    {
+                        session.Delete("Debug/Done");
+                        session.SaveChanges();
                         break;
+                    }
                 }
             } while (true);
         }
@@ -314,19 +334,19 @@ namespace Raven.TestDriver
         {
             Console.WriteLine(url);
 
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            if (PlatformDetails.RunningOnPosix == false)
             {
-                Process.Start(new ProcessStartInfo("cmd", $"/c start \"Stop & look at studio\" \"{url}\"")); // Works ok on windows
+                Process.Start(new ProcessStartInfo("cmd", $"/c start \"Stop & look at studio\" \"{url}\""));
                 return;
             }
 
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+            if (PlatformDetails.RunningOnMacOsx)
             {
-                Process.Start("xdg-open", url); // Works ok on linux
+                Process.Start("open", url);
                 return;
             }
 
-            throw new NotImplementedException("Implement your own browser opening mechanism.");
+            Process.Start("xdg-open", url);
         }
 
         private static void ReportError(Exception e)

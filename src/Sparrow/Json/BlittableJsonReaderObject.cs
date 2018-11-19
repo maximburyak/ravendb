@@ -888,8 +888,7 @@ NotFound:
                 var prevEscCharOffset = 0;
                 for (var i = 0; i < escCount; i++)
                 {
-                    byte escCharOffsetLen;
-                    var escCharOffset = ReadVariableSizeInt(str + stringLength + escOffset + totalEscCharLen, out escCharOffsetLen);
+                    var escCharOffset = ReadVariableSizeInt(str + stringLength + escOffset + totalEscCharLen, out var escCharOffsetLen);
                     escCharOffset += prevEscCharOffset;
                     var escChar = (char)ReadNumber(_mem + str + escCharOffset, 1);
                     switch (escChar)
@@ -904,7 +903,9 @@ NotFound:
                         case '\t':
                             break;
                         default:
-                            throw new InvalidDataException("String not valid, invalid escape character: " + escChar);
+                            if(escChar >= 32)
+                                throw new InvalidDataException("String not valid, invalid escape character: " + escChar);
+                            break;
                     }
                     totalEscCharLen += escCharOffsetLen;
                     prevEscCharOffset = escCharOffset + 1;
@@ -1113,7 +1114,7 @@ NotFound:
 
         public override int GetHashCode()
         {
-            return _size ^ _propCount;
+            return _propCount;
         }
 
         [Conditional("DEBUG")]

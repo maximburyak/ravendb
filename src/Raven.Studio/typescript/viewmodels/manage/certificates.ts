@@ -39,6 +39,7 @@ class certificates extends viewModelBase {
     certificates = ko.observableArray<unifiedCertificateDefinition>();
     serverCertificateThumbprint = ko.observable<string>();
     serverCertificateSetupMode = ko.observable<Raven.Server.Commercial.SetupMode>();
+    wellKnownAdminCerts = ko.observableArray<string>([]);
     
     domainsForServerCertificate = ko.observableArray<string>([]);
     
@@ -99,7 +100,9 @@ class certificates extends viewModelBase {
     }
     
     private onAlert(alert: Raven.Server.NotificationCenter.Notifications.AlertRaised) {
-        if (alert.AlertType === "Certificates_ReplaceError" || alert.AlertType === "Certificates_ReplaceSuccess") {
+        if (alert.AlertType === "Certificates_ReplaceError" ||
+            alert.AlertType === "Certificates_ReplaceSuccess" ||
+            alert.AlertType === "Certificates_EntireClusterReplaceSuccess") {
             this.loadCertificates();
         }
     }
@@ -331,6 +334,7 @@ class certificates extends viewModelBase {
                 
                 this.updateCache(mergedCertificates);
                 this.certificates(mergedCertificates); 
+                this.wellKnownAdminCerts(certificatesInfo.WellKnownAdminCerts || []);
             });
     }
     

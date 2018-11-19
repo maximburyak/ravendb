@@ -10,7 +10,9 @@ using Raven.Server.Documents.Indexes.Configuration;
 using Raven.Server.Documents.Indexes.Persistence.Lucene;
 using Raven.Server.Documents.Indexes.Persistence.Lucene.Documents;
 using Raven.Server.Documents.Indexes.Static;
+using Raven.Server.Documents.Indexes.Static.Roslyn.Rewriters;
 using Raven.Server.Documents.Indexes.Workers;
+using Raven.Server.Documents.Queries;
 using Raven.Server.ServerWide.Context;
 using Raven.Server.Utils;
 using Sparrow.Json;
@@ -65,10 +67,11 @@ namespace Raven.Server.Documents.Indexes.MapReduce.Static
             _mre.Set();
         }
 
-        public static MapReduceIndex CreateNew(IndexDefinition definition, DocumentDatabase documentDatabase)
+        public static MapReduceIndex CreateNew(IndexDefinition definition, DocumentDatabase documentDatabase, bool isIndexReset = false)
         {
             var instance = CreateIndexInstance(definition);
-            ValidateReduceResultsCollectionName(definition, instance._compiled, documentDatabase);
+            ValidateReduceResultsCollectionName(definition, instance._compiled, documentDatabase,
+                checkIfCollectionEmpty: isIndexReset == false);
 
             instance.Initialize(documentDatabase,
                 new SingleIndexConfiguration(definition.Configuration, documentDatabase.Configuration),
@@ -77,7 +80,7 @@ namespace Raven.Server.Documents.Indexes.MapReduce.Static
             return instance;
         }
 
-        public static void ValidateReduceResultsCollectionName(IndexDefinition definition, StaticIndexBase index, DocumentDatabase database)
+        public static void ValidateReduceResultsCollectionName(IndexDefinition definition, StaticIndexBase index, DocumentDatabase database, bool checkIfCollectionEmpty)
         {
             var outputReduceToCollection = definition.OutputReduceToCollection;
             if (string.IsNullOrWhiteSpace(outputReduceToCollection))
@@ -148,16 +151,19 @@ namespace Raven.Server.Documents.Indexes.MapReduce.Static
                 }
             }
 
-            using (database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
-            using (context.OpenReadTransaction())
+            if (checkIfCollectionEmpty)
             {
-                var stats = database.DocumentsStorage.GetCollection(outputReduceToCollection, context);
-                if (stats.Count > 0)
+                using (database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
+                using (context.OpenReadTransaction())
                 {
-                    throw new IndexInvalidException($"In order to create the '{definition.Name}' index " +
-                                                    $"which would output reduce results to documents in the '{outputReduceToCollection}' collection, " +
-                                                    $"you firstly need to delete all of the documents in the '{stats.Name}' collection " +
-                                                    $"(currently have {stats.Count} document{(stats.Count == 1 ? "" : "s")}).");
+                    var stats = database.DocumentsStorage.GetCollection(outputReduceToCollection, context);
+                    if (stats.Count > 0)
+                    {
+                        throw new IndexInvalidException(
+                            $"Index '{definition.Name}' is defined to output the Reduce results to documents in Collection '{outputReduceToCollection}'. " +
+                            $"This collection currently has {stats.Count} document{(stats.Count == 1 ? ' ' : 's')}. " +
+                            $"All documents in Collection '{stats.Name}' must be deleted first.");
+                    }
                 }
             }
         }
@@ -256,7 +262,7 @@ namespace Raven.Server.Documents.Indexes.MapReduce.Static
             return workers.ToArray();
         }
 
-        public override void HandleDelete(DocumentTombstone tombstone, string collection, IndexWriteOperation writer, TransactionOperationContext indexContext, IndexingStatsScope stats)
+        public override void HandleDelete(Tombstone tombstone, string collection, IndexWriteOperation writer, TransactionOperationContext indexContext, IndexingStatsScope stats)
         {
             if (_referencedCollections.Count > 0)
                 _handleReferences.HandleDelete(tombstone, collection, writer, indexContext, stats);
@@ -281,19 +287,20 @@ namespace Raven.Server.Documents.Indexes.MapReduce.Static
             return PutMapResults(lowerId, wrapper, indexContext, stats);
         }
 
-        protected override bool IsStale(DocumentsOperationContext databaseContext, TransactionOperationContext indexContext, long? cutoff = null, List<string> stalenessReasons = null)
+        protected override bool IsStale(DocumentsOperationContext databaseContext, TransactionOperationContext indexContext, long? cutoff = null, long? referenceCutoff = null, List<string> stalenessReasons = null)
         {
-            var isStale = base.IsStale(databaseContext, indexContext, cutoff, stalenessReasons);
+            var isStale = base.IsStale(databaseContext, indexContext, cutoff, referenceCutoff, stalenessReasons);
             if (isStale && stalenessReasons == null || _referencedCollections.Count == 0)
                 return isStale;
 
-            return StaticIndexHelper.IsStale(this, databaseContext, indexContext, cutoff, stalenessReasons) || isStale;
+            return StaticIndexHelper.IsStaleDueToReferences(this, databaseContext, indexContext, referenceCutoff, stalenessReasons) || isStale;
         }
 
-        protected override unsafe long CalculateIndexEtag(bool isStale, DocumentsOperationContext documentsContext, TransactionOperationContext indexContext)
+        protected override unsafe long CalculateIndexEtag(DocumentsOperationContext documentsContext, TransactionOperationContext indexContext,
+            QueryMetadata query, bool isStale)
         {
             if (_referencedCollections.Count == 0)
-                return base.CalculateIndexEtag(isStale, documentsContext, indexContext);
+                return base.CalculateIndexEtag(documentsContext, indexContext, query, isStale);
 
             var minLength = MinimumSizeForCalculateIndexEtagLength();
             var length = minLength +
@@ -302,6 +309,8 @@ namespace Raven.Server.Documents.Indexes.MapReduce.Static
             var indexEtagBytes = stackalloc byte[length];
 
             CalculateIndexEtagInternal(indexEtagBytes, isStale, State, documentsContext, indexContext);
+
+            UseAllDocumentsEtag(documentsContext, query, length, indexEtagBytes);
 
             var writePos = indexEtagBytes + minLength;
 
@@ -343,7 +352,7 @@ namespace Raven.Server.Documents.Indexes.MapReduce.Static
             private IndexingStatsScope _stats;
             private IndexingStatsScope _createBlittableResultStats;
             private readonly ReduceKeyProcessor _reduceKeyProcessor;
-            private readonly HashSet<string> _groupByFields;
+            private readonly HashSet<CompiledIndexField> _groupByFields;
             private readonly bool _isMultiMap;
             private PropertyAccessor _propertyAccessor;
             private readonly StaticIndexBase _compiledIndex;
@@ -389,7 +398,7 @@ namespace Raven.Server.Documents.Indexes.MapReduce.Static
                 private readonly IEnumerator _enumerator;
                 private readonly AnonymousObjectToBlittableMapResultsEnumerableWrapper _parent;
                 private readonly IndexingStatsScope _createBlittableResult;
-                private readonly HashSet<string> _groupByFields;
+                private readonly HashSet<CompiledIndexField> _groupByFields;
                 private readonly ReduceKeyProcessor _reduceKeyProcessor;
 
                 public Enumerator(IEnumerator enumerator, AnonymousObjectToBlittableMapResultsEnumerableWrapper parent, IndexingStatsScope createBlittableResult)
@@ -414,7 +423,7 @@ namespace Raven.Server.Documents.Indexes.MapReduce.Static
 
                         if (_parent._isMultiMap == false)
                             accessor = _parent._propertyAccessor ??
-                                       (_parent._propertyAccessor = PropertyAccessor.CreateMapReduceOutputAccessor(output.GetType(), _groupByFields));
+                                       (_parent._propertyAccessor = PropertyAccessor.CreateMapReduceOutputAccessor(output.GetType(), output, _groupByFields));
                         else
                             accessor = TypeConverter.GetPropertyAccessorForMapReduceOutput(output, _groupByFields);
 
@@ -434,7 +443,11 @@ namespace Raven.Server.Documents.Indexes.MapReduce.Static
                             mapResult[field.Key] = blittableValue;
 
                             if (field.Value.IsGroupByField)
-                                _reduceKeyProcessor.Process(_parent._indexContext.Allocator, blittableValue);
+                            {
+                                var valueForProcessor = field.Value.GroupByField.GetValue(value, blittableValue);
+                                _reduceKeyProcessor.Process(_parent._indexContext.Allocator, valueForProcessor);
+                            }
+                                
                         }
 
                         if (_reduceKeyProcessor.ProcessedFields != _groupByFields.Count)
@@ -463,12 +476,12 @@ namespace Raven.Server.Documents.Indexes.MapReduce.Static
                     _reduceKeyProcessor.ReleaseBuffer();
                 }
 
-                private static void ThrowMissingGroupByFieldsInMapOutput(object output, HashSet<string> groupByFields, StaticIndexBase compiledIndex)
+                private static void ThrowMissingGroupByFieldsInMapOutput(object output, HashSet<CompiledIndexField> groupByFields, StaticIndexBase compiledIndex)
                 {
                     throw new InvalidOperationException(
                         $"The output of the mapping function does not contain all fields that the index is supposed to group by.{Environment.NewLine}" +
                         $"Output: {output}{Environment.NewLine}" +
-                        $"Group by fields: {string.Join(",", groupByFields)}{Environment.NewLine}" +
+                        $"Group by fields: {string.Join(",", groupByFields.Select(x => x.Name))}{Environment.NewLine}" +
                         $"Compiled index def:{Environment.NewLine}{compiledIndex.Source}");
                 }
             }

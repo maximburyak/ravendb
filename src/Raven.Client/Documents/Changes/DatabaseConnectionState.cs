@@ -7,6 +7,14 @@ namespace Raven.Client.Documents.Changes
 {
     internal class DatabaseConnectionState : IChangesConnectionState<DocumentChange>, IChangesConnectionState<IndexChange>, IChangesConnectionState<OperationStatusChange>
     {
+        public static readonly DatabaseConnectionState Dummy = new DatabaseConnectionState(() => Task.CompletedTask, () => Task.CompletedTask);
+
+        static DatabaseConnectionState()
+        {
+            Dummy.Inc();
+            Dummy.Set(Task.CompletedTask);
+        }
+
         public event Action<Exception> OnError;
         private readonly Func<Task> _onDisconnect;
         public readonly Func<Task> OnConnect;
@@ -78,7 +86,7 @@ namespace Raven.Client.Documents.Changes
 
         public void Dispose()
         {
-            Set(Task.FromCanceled(CancellationToken.None));
+            Set(Task.FromException(new ObjectDisposedException(nameof(DatabaseConnectionState))));
             OnDocumentChangeNotification = null;
             OnIndexChangeNotification = null;
             OnOperationStatusChangeNotification = null;

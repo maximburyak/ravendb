@@ -26,7 +26,7 @@ using Constants = Raven.Client.Constants;
 
 namespace Raven.Server.Documents.PeriodicBackup
 {
-    public class PeriodicBackupRunner : IDocumentTombstoneAware, IDisposable
+    public class PeriodicBackupRunner : ITombstoneAware, IDisposable
     {
         private readonly Logger _logger;
 
@@ -58,7 +58,7 @@ namespace Raven.Server.Documents.PeriodicBackup
 
             _tempBackupPath = (_database.Configuration.Storage.TempPath ?? _database.Configuration.Core.DataDirectory).Combine("PeriodicBackupTemp");
 
-            _database.DocumentTombstoneCleaner.Subscribe(this);
+            _database.TombstoneCleaner.Subscribe(this);
             IOExtensions.DeleteDirectory(_tempBackupPath.FullPath);
             Directory.CreateDirectory(_tempBackupPath.FullPath);
         }
@@ -326,8 +326,8 @@ namespace Raven.Server.Documents.PeriodicBackup
 
                 periodicBackup.StartTime = SystemTime.UtcNow;
                 var backupTask = new BackupTask(
-                    _serverStore, 
-                    _database, 
+                    _serverStore,
+                    _database,
                     periodicBackup,
                     isFullBackup,
                     backupToLocalFolder,
@@ -372,6 +372,22 @@ namespace Raven.Server.Documents.PeriodicBackup
                 task.ContinueWith(_ => backupTask.TaskCancelToken.Dispose());
 
                 return operationId;
+            }
+            catch (Exception e)
+            {
+                var message = $"Failed to start the backup task: '{periodicBackup.Configuration.Name}'";
+                if (_logger.IsOperationsEnabled)
+                    _logger.Operations(message, e);
+
+                _database.NotificationCenter.Add(AlertRaised.Create(
+                    _database.Name,
+                    $"Periodic Backup task: '{periodicBackup.Configuration.Name}'",
+                    message,
+                    AlertType.PeriodicBackup,
+                    NotificationSeverity.Error,
+                    details: new ExceptionDetails(e)));
+
+                throw;
             }
             finally
             {
@@ -570,6 +586,7 @@ namespace Raven.Server.Documents.PeriodicBackup
                 return;
             }
 
+            var previousConfiguration = existingBackupState.Configuration;
             existingBackupState.Configuration = newConfiguration;
 
             if (taskState != TaskStatus.ActiveByCurrentNode)
@@ -586,7 +603,7 @@ namespace Raven.Server.Documents.PeriodicBackup
                 return;
             }
 
-            if (existingBackupState.Configuration.HasBackupFrequencyChanged(newConfiguration) == false &&
+            if (previousConfiguration.HasBackupFrequencyChanged(newConfiguration) == false &&
                 existingBackupState.HasScheduledBackup())
             {
                 // backup frequency hasn't changed
@@ -663,7 +680,7 @@ namespace Raven.Server.Documents.PeriodicBackup
                     return;
 
                 _disposed = true;
-                _database.DocumentTombstoneCleaner.Unsubscribe(this);
+                _database.TombstoneCleaner.Unsubscribe(this);
 
                 using (_cancellationToken)
                 {
@@ -709,6 +726,12 @@ namespace Raven.Server.Documents.PeriodicBackup
             }
         }
 
+        public bool HasPeriodicBackups()
+        {
+            RemoveInactiveCompletedTasks();
+            return _periodicBackups.Count > 0 || _inactiveRunningPeriodicBackupsTasks.Count > 0;
+        }
+
         public bool HasRunningBackups()
         {
             foreach (var periodicBackup in _periodicBackups)
@@ -718,7 +741,9 @@ namespace Raven.Server.Documents.PeriodicBackup
                     return true;
             }
 
-            return false;
+            RemoveInactiveCompletedTasks();
+
+            return _inactiveRunningPeriodicBackupsTasks.Count > 0;
         }
 
         public BackupInfo GetBackupInfo()
@@ -771,7 +796,7 @@ namespace Raven.Server.Documents.PeriodicBackup
             };
         }
 
-        public Dictionary<string, long> GetLastProcessedDocumentTombstonesPerCollection()
+        public Dictionary<string, long> GetLastProcessedTombstonesPerCollection()
         {
             if (_periodicBackups.Count == 0)
                 return EmptyDictionary;
@@ -791,14 +816,7 @@ namespace Raven.Server.Documents.PeriodicBackup
             if (minLastEtag == long.MaxValue)
                 minLastEtag = 0;
 
-            using (_database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
-            using (context.OpenReadTransaction())
-            {
-                foreach (var collection in _database.DocumentsStorage.GetCollections(context))
-                {
-                    processedTombstonesPerCollection[collection.Name] = minLastEtag;
-                }
-            }
+            processedTombstonesPerCollection[Constants.Documents.Collections.AllDocumentsCollection] = minLastEtag;
 
             return processedTombstonesPerCollection;
         }

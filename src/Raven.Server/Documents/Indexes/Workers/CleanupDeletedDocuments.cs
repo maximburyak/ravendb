@@ -85,20 +85,23 @@ namespace Raven.Server.Documents.Indexes.Workers
                                 if (indexWriter == null)
                                     indexWriter = writeOperation.Value;
 
-                                if (_logger.IsInfoEnabled)
-                                    _logger.Info($"Executing cleanup for '{_index} ({_index.Name})'. Processing tombstone {tombstone.LowerId} ({tombstone.Etag}).");
-
                                 count++;
                                 batchCount++;
                                 lastEtag = tombstone.Etag;
                                 inMemoryStats.UpdateLastEtag(lastEtag, isTombsone: true);
+
+                                if (_logger.IsInfoEnabled && count % 2048 == 0)
+                                    _logger.Info($"Executing cleanup for '{_index.Name}'. Processed count: {count:#,#;;0} etag: {lastEtag}.");
+
+                                if (tombstone.Type != Tombstone.TombstoneType.Document)
+                                    continue; // this can happen when we have '@all_docs'
 
                                 if (tombstone.DeletedEtag > lastMappedEtag)
                                     continue; // no-op, we have not yet indexed this document
 
                                 _index.HandleDelete(tombstone, collection, indexWriter, indexContext, collectionStats);
 
-                                if (CanContinueBatch(databaseContext, indexContext, collectionStats, lastEtag, lastCollectionEtag, batchCount) == false)
+                                if (CanContinueBatch(databaseContext, indexContext, collectionStats, indexWriter, lastEtag, lastCollectionEtag, batchCount) == false)
                                 {
                                     keepRunning = false;
                                     break;
@@ -139,6 +142,7 @@ namespace Raven.Server.Documents.Indexes.Workers
             DocumentsOperationContext documentsContext,
             TransactionOperationContext indexingContext,
             IndexingStatsScope stats,
+            IndexWriteOperation indexWriteOperation,
             long currentEtag,
             long maxEtag,
             int count)
@@ -149,7 +153,7 @@ namespace Raven.Server.Documents.Indexes.Workers
             if (currentEtag >= maxEtag && stats.Duration >= _configuration.MapTimeoutAfterEtagReached.AsTimeSpan)
                 return false;
 
-            if (_index.CanContinueBatch(stats, documentsContext, indexingContext, count) == false)
+            if (_index.CanContinueBatch(stats, documentsContext, indexingContext, indexWriteOperation, count) == false)
                 return false;
 
             return true;

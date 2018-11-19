@@ -189,6 +189,10 @@ class indexes extends viewModelBase {
                 this.indexesProgressRefreshThrottle();
             });
 
+        if (this.searchText()) {
+            this.filterIndexes();
+        }
+
         this.processReplacements(replacements);
         this.syncIndexingProgress();
     }
@@ -316,7 +320,7 @@ class indexes extends viewModelBase {
     }
 
     openFaultyIndex(i: index) {
-        this.confirmationMessage("Open index?", `You're openning a faulty index '${i.name}'`)
+        this.confirmationMessage("Open index?", `You're openning a faulty index <strong>'${i.name}'</strong>`)
             .done(result => {
                 if (result.can) {
 
@@ -329,7 +333,7 @@ class indexes extends viewModelBase {
     }
 
     resetIndex(i: index) {
-        this.confirmationMessage("Reset index?", `You're resetting '${i.name}'`)
+        this.confirmationMessage("Reset index?", `You're resetting <strong>'${i.name}'</strong>`)
             .done(result => {
                 if (result.can) {
 
@@ -492,7 +496,7 @@ class indexes extends viewModelBase {
     }
 
     forceSideBySide(idx: index) {
-        this.confirmationMessage("Are you sure?", `Do you want to forcibly swap side-by-side index: ${idx.name}?`)
+        this.confirmationMessage("Are you sure?", `Do you want to <strong>force swapping</strong> the side-by-side index: ${idx.name}?`)
             .done((result: canActivateResultDto) => {
                 if (result.can) {
                     this.spinners.swapNow.push(idx.name);
@@ -520,19 +524,21 @@ class indexes extends viewModelBase {
         if (this.lockModeCommon() === lockModeString)
             return;
 
-        this.confirmationMessage("Are you sure?", `Do you want to ${lockModeStrForTitle} selected indexes?`)
+        this.confirmationMessage("Are you sure?", `Do you want to <strong>${lockModeStrForTitle}</strong> selected indexes?</br>Note: Static-indexes only will be set, 'Lock Mode' is not relevant for auto-indexes.`)
             .done(can => {
                 if (can) {
                     eventsCollector.default.reportEvent("index", "set-lock-mode-selected", lockModeString);
+           
+                    const indexes = this.getSelectedIndexes().filter(index => index.type !== "AutoMap" && index.type !== "AutoMapReduce");
 
-                    this.spinners.globalLockChanges(true);
-
-                    const indexes = this.getSelectedIndexes();
-
-                    new saveIndexLockModeCommand(indexes, lockModeString, this.activeDatabase(),lockModeStrForTitle)
-                        .execute()
-                        .done(() => indexes.forEach(i => i.lockMode(lockModeString)))
-                        .always(() => this.spinners.globalLockChanges(false));
+                    if (indexes.length) {
+                        this.spinners.globalLockChanges(true);
+                        
+                        new saveIndexLockModeCommand(indexes, lockModeString, this.activeDatabase(), lockModeStrForTitle)
+                            .execute()
+                            .done(() => indexes.forEach(i => i.lockMode(lockModeString)))
+                            .always(() => this.spinners.globalLockChanges(false));
+                    }
                 }
             });
     }
@@ -547,7 +553,7 @@ class indexes extends viewModelBase {
 
     private toggleDisableSelectedIndexes(start: boolean) {
         const status = start ? "enable" : "disable";
-        this.confirmationMessage("Are you sure?", `Do you want to ${status} selected indexes?`)
+        this.confirmationMessage("Are you sure?", `Do you want to <strong>${status}</strong> selected indexes?`)
             .done(can => {
                 if (can) {
                     eventsCollector.default.reportEvent("index", "toggle-status", status);
@@ -572,7 +578,7 @@ class indexes extends viewModelBase {
 
     private togglePauseSelectedIndexes(resume: boolean) {
         const status = resume ? "resume" : "pause";
-        this.confirmationMessage("Are you sure?", `Do you want to ${status} selected indexes?`)
+        this.confirmationMessage("Are you sure?", `Do you want to <strong>${status}</strong> selected indexes?`)
             .done(can => {
                 if (can) {
                     eventsCollector.default.reportEvent("index", "toggle-status", status);
@@ -592,7 +598,7 @@ class indexes extends viewModelBase {
     }
 
     startIndexing(): void {
-        this.confirmationMessage("Are you sure?", "Do you want to resume indexing?")
+        this.confirmationMessage("Are you sure?", "Do you want to <strong>resume</strong> indexing?")
             .done(result => {
                 if (result.can) {
                     eventsCollector.default.reportEvent("indexes", "resume-all");
@@ -611,7 +617,7 @@ class indexes extends viewModelBase {
     }
 
     stopIndexing() {
-        this.confirmationMessage("Are you sure?", "Do you want to pause indexing until server restart?")
+        this.confirmationMessage("Are you sure?", "Do you want to <strong>pause indexing</strong> until server restart?")
             .done(result => {
                 if (result.can) {
                     eventsCollector.default.reportEvent("indexes", "pause-all");

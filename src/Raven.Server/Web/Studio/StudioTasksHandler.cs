@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Net;
 using System.Threading.Tasks;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -7,14 +8,58 @@ using Raven.Client.Exceptions;
 using Raven.Server.Config;
 using Raven.Server.Routing;
 using Raven.Server.ServerWide;
+using Raven.Server.Utils;
+using Raven.Server.Web.System;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
 using Voron.Util.Settings;
+using Raven.Server.Documents.Indexes;
 
 namespace Raven.Server.Web.Studio
 {
     public class StudioTasksHandler : RequestHandler
     {
+        [RavenAction("/studio-tasks/is-valid-name", "GET", AuthorizationStatus.ValidUser)]
+        public Task IsValidName()
+        {
+            if (Enum.TryParse(GetQueryStringValueAndAssertIfSingleAndNotEmpty("type").Trim(), out ItemType elementType) == false)
+            {
+                throw new ArgumentException($"Type {elementType} is not supported");
+            }
+            
+            var name = GetQueryStringValueAndAssertIfSingleAndNotEmpty("name").Trim();
+            var path = GetStringQueryString("dataPath", false);
+            
+            using (ServerStore.ContextPool.AllocateOperationContext(out JsonOperationContext context))
+            {
+                bool isValid = true;
+                string errorMessage = null;
+                
+                switch (elementType)
+                {
+                    case ItemType.Database:
+                        isValid = ResourceNameValidator.IsValidResourceName(name, path, out errorMessage);
+                        break;
+                    case ItemType.Index:
+                        isValid = IndexStore.IsValidIndexName(name, isStatic: true, out errorMessage);
+                        break;
+                }
+                
+                using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
+                {
+                    context.Write(writer, new DynamicJsonValue
+                    {
+                        [nameof(NameValidation.IsValid)] = isValid,
+                        [nameof(NameValidation.ErrorMessage)] = errorMessage
+                    });
+                    
+                    writer.Flush();
+                }
+            }
+            
+            return Task.CompletedTask;
+        }
+        
         // return the calculated full data directory for the database before it is created according to the name & path supplied
         [RavenAction("/studio-tasks/full-data-directory", "GET", AuthorizationStatus.ValidUser)]
         public Task FullDataDirectory()
@@ -104,6 +149,12 @@ namespace Raven.Server.Web.Studio
                     [nameof(Expression)] = Expression
                 };
             }
+        }
+        
+        public enum ItemType
+        {
+            Index,
+            Database
         }
     }
 }

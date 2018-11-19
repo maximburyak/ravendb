@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using FastTests;
 using FastTests.Server.Documents.Revisions;
 using FastTests.Server.Replication;
+using FastTests.Utils;
 using Raven.Client;
 using Raven.Client.Documents;
 using Raven.Client.Documents.Operations;
@@ -22,7 +23,7 @@ using Xunit.Sdk;
 
 namespace SlowTests.Server.Documents.Revisions
 {
-    public class RevisionsReplication : ReplicationTestBase, IDocumentTombstoneAware
+    public class RevisionsReplication : ReplicationTestBase, ITombstoneAware
     {
         private void WaitForMarker(DocumentStore store1, DocumentStore store2)
         {
@@ -194,11 +195,17 @@ namespace SlowTests.Server.Documents.Revisions
             {
                 var database = await GetDocumentDatabaseInstanceFor(store1);
                 var database2 = await GetDocumentDatabaseInstanceFor(store2);
-                database.DocumentTombstoneCleaner.Subscribe(this);
-                database2.DocumentTombstoneCleaner.Subscribe(this);
+                database.TombstoneCleaner.Subscribe(this);
+                database2.TombstoneCleaner.Subscribe(this);
 
-                await RevisionsHelper.SetupRevisions(Server.ServerStore, store1.Database, false);
-                await RevisionsHelper.SetupRevisions(Server.ServerStore, store2.Database, false);
+                await RevisionsHelper.SetupRevisions(Server.ServerStore, store1.Database, configuration =>
+                {
+                    configuration.Collections["Users"].PurgeOnDelete = false;
+                });
+                await RevisionsHelper.SetupRevisions(Server.ServerStore, store2.Database, configuration =>
+                {
+                    configuration.Collections["Users"].PurgeOnDelete = false;
+                });
                 await SetupReplicationAsync(store1, store2);
 
                 var deletedRevisions = await store1.Commands().GetRevisionsBinEntriesAsync(long.MaxValue);
@@ -290,7 +297,7 @@ namespace SlowTests.Server.Documents.Revisions
             public string Name { get; set; }
         }
 
-        public Dictionary<string, long> GetLastProcessedDocumentTombstonesPerCollection()
+        public Dictionary<string, long> GetLastProcessedTombstonesPerCollection()
         {
             return new Dictionary<string, long>
             {

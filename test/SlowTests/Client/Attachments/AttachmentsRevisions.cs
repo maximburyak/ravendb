@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using FastTests;
 using FastTests.Server.Documents.Revisions;
+using FastTests.Utils;
 using Raven.Client;
 using Raven.Client.Documents;
 using Raven.Client.Documents.Operations;
@@ -26,7 +27,12 @@ namespace SlowTests.Client.Attachments
             using (var store = GetDocumentStore())
             {
                 await SetDatabaseId(store, dbId);
-                await RevisionsHelper.SetupRevisions(Server.ServerStore, store.Database, false, 4);
+                await RevisionsHelper.SetupRevisions(Server.ServerStore, store.Database, configuration =>
+                {
+                    configuration.Collections["Users"].PurgeOnDelete = false;
+                    configuration.Collections["Users"].MinimumRevisionsToKeep = 4;
+                });
+
                 var names = CreateDocumentWithAttachments(store);
                 AssertRevisions(store, names, (session, revisions) =>
                 {

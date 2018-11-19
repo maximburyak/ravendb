@@ -16,11 +16,13 @@ namespace Raven.Server.Rachis
     {
         protected TransactionContextPool ContextPoolForReadOnlyOperations;
         protected RachisConsensus _parent;
-
+        public RachisVersionValidation Validator;
+        
         public virtual void Initialize(RachisConsensus parent, TransactionOperationContext context)
         {
             _parent = parent;            
             ContextPoolForReadOnlyOperations = _parent.ContextPool;
+            Validator = InitializeValidator();
         }
 
         public long Apply(TransactionOperationContext context, long uptoInclusive, Leader leader, ServerStore serverStore, Stopwatch duration)
@@ -67,14 +69,15 @@ namespace Raven.Server.Rachis
             
         }
 
+        protected abstract RachisVersionValidation InitializeValidator();
 
         public abstract bool ShouldSnapshot(Slice slice, RootObjectType type);
 
-        public abstract Task<(Stream Stream, Action Disconnect)> ConnectToPeer(string url, X509Certificate2 certificate);
+        public abstract Task<RachisConnection> ConnectToPeer(string url, string tag, X509Certificate2 certificate);
 
-        public virtual void OnSnapshotInstalled(TransactionOperationContext context, long lastIncludedIndex, ServerStore serverStore)
+        public virtual Task OnSnapshotInstalledAsync(long lastIncludedIndex, ServerStore serverStore)
         {
-            
+            return Task.CompletedTask;
         }
     }
 }

@@ -24,6 +24,7 @@ import showDataDialog = require("viewmodels/common/showDataDialog");
 import formatIndexCommand = require("commands/database/index/formatIndexCommand");
 import additionalSource = require("models/database/index/additionalSource");
 import index = require("models/database/index/index");
+import viewHelpers = require("common/helpers/view/viewHelpers");
 
 class editIndex extends viewModelBase {
 
@@ -111,7 +112,7 @@ class editIndex extends viewModelBase {
             } else { 
                 return `<div class="sourcePreview"><i class="icon-xl icon-empty-set text-muted"></i><h2 class="text-center">No Additional sources uploaded</h2></div>`;
             }
-        })
+        });
     }
 
     canActivate(indexToEdit: string): JQueryPromise<canActivateResultDto> {
@@ -136,7 +137,6 @@ class editIndex extends viewModelBase {
         }
 
         return $.Deferred<canActivateResultDto>().resolve({ can: true });
-
     }
 
     activate(indexToEditName: string) {
@@ -188,7 +188,9 @@ class editIndex extends viewModelBase {
 
     private updateIndexFields() {
         const map = this.editedIndex().maps()[0].map();
-        new getIndexFieldsFromMapCommand(this.activeDatabase(), map)
+        const additionalSourcesDto = {} as dictionary<string>;
+        this.editedIndex().additionalSources().forEach(x => additionalSourcesDto[x.name()] = x.code());
+        new getIndexFieldsFromMapCommand(this.activeDatabase(), map, additionalSourcesDto)
             .execute()
             .done((fields: resultsDto<string>) => {
                 this.fieldNames(fields.Results);
@@ -197,59 +199,60 @@ class editIndex extends viewModelBase {
 
     private initializeDirtyFlag() {
         const indexDef: indexDefinition = this.editedIndex();
-        const checkedFieldsArray: Array<KnockoutObservable<any>> = [indexDef.name, indexDef.maps, indexDef.reduce, indexDef.numberOfFields, indexDef.outputReduceToCollection];
-
-        const configuration = indexDef.configuration();
-        if (configuration) {
-            checkedFieldsArray.push(indexDef.numberOfConfigurationFields);
-
-            configuration.forEach(configItem => {
-                checkedFieldsArray.push(configItem.key);
-                checkedFieldsArray.push(configItem.value);
+        
+        const hasAnyDirtyConfiguration = ko.pureComputed(() => {
+           let anyDirty = false;
+           indexDef.configuration().forEach(config =>  {
+               if (config.dirtyFlag().isDirty()) {
+                   anyDirty = true;
+               } 
+           });
+           return anyDirty;
+        });
+        
+        const hasAnyDirtyField = ko.pureComputed(() => {
+            let anyDirty = false;
+            indexDef.fields().forEach(field =>  {
+                if (field.dirtyFlag().isDirty()) {
+                    anyDirty = true;
+                }
             });
-        }
-
-        const addDirtyFlagInput = (field: indexFieldOptions) => {
-            checkedFieldsArray.push(field.name);
-            checkedFieldsArray.push(field.analyzer);
-            checkedFieldsArray.push(field.indexing);
-            checkedFieldsArray.push(field.storage);
-            checkedFieldsArray.push(field.suggestions);
-            checkedFieldsArray.push(field.termVector);
-            checkedFieldsArray.push(field.hasSpatialOptions);
-
-            const spatial = field.spatial();
-            if (spatial) {
-                checkedFieldsArray.push(spatial.type);
-                checkedFieldsArray.push(spatial.strategy);
-                checkedFieldsArray.push(spatial.maxTreeLevel);
-                checkedFieldsArray.push(spatial.minX);
-                checkedFieldsArray.push(spatial.maxX);
-                checkedFieldsArray.push(spatial.minY);
-                checkedFieldsArray.push(spatial.maxY);
-                checkedFieldsArray.push(spatial.units);
-            }
-        };
-
-        indexDef.fields().forEach(field => addDirtyFlagInput(field));
+            return anyDirty;
+        });
 
         const hasDefaultFieldOptions = ko.pureComputed(() => !!indexDef.defaultFieldOptions());
-        checkedFieldsArray.push(hasDefaultFieldOptions);
-        
-        checkedFieldsArray.push(indexDef.numberOfAdditionalSources);
-        
-        if (indexDef.additionalSources) {
-            indexDef.additionalSources().forEach(source => {
-                checkedFieldsArray.push(source.code);
-                checkedFieldsArray.push(source.name);
+        const hasAnyDirtyDefaultFieldOptions = ko.pureComputed(() => {
+           if (hasDefaultFieldOptions() && indexDef.defaultFieldOptions().dirtyFlag().isDirty()) {
+               return true;
+           }
+           return false;
+        });
+
+        const hasAnyDirtyAdditionalSource = ko.pureComputed(() => {
+            let anyDirty = false;
+            indexDef.additionalSources().forEach(source =>  {
+                if (source.dirtyFlag().isDirty()) {
+                    anyDirty = true;
+                }
             });
-        }
-
-        const defaultFieldOptions = indexDef.defaultFieldOptions();
-        if (defaultFieldOptions)
-            addDirtyFlagInput(defaultFieldOptions);
-
-        this.dirtyFlag = new ko.DirtyFlag(checkedFieldsArray, false, jsonUtil.newLineNormalizingHashFunction);
+            return anyDirty;
+        });
+        
+        this.dirtyFlag = new ko.DirtyFlag([
+            indexDef.name, 
+            indexDef.maps, 
+            indexDef.reduce, 
+            indexDef.numberOfFields,
+            indexDef.numberOfConfigurationFields,
+            indexDef.outputReduceToCollection,
+            indexDef.reduceToCollectionName,
+            indexDef.numberOfAdditionalSources,
+            hasAnyDirtyField,
+            hasAnyDirtyConfiguration,
+            hasDefaultFieldOptions,
+            hasAnyDirtyDefaultFieldOptions,
+            hasAnyDirtyAdditionalSource
+        ], false, jsonUtil.newLineNormalizingHashFunction);
 
         this.isSaveEnabled = ko.pureComputed(() => {
             const editIndex = this.isEditingExistingIndex();
@@ -296,7 +299,6 @@ class editIndex extends viewModelBase {
             placement: "top"
         });
     }
-
 
     addMap() {
         eventsCollector.default.reportEvent("index", "add-map");
@@ -410,63 +412,75 @@ class editIndex extends viewModelBase {
 
         const editedIndex = this.editedIndex();
 
-        if (!this.isValid(this.editedIndex().validationGroup))
+        if (!this.isValid(editedIndex.validationGroup))
             valid = false;
-
-        editedIndex.fields().forEach(field => {
-            if (!this.isValid(field.validationGroup)) {
-                valid = false;
-            }
-
-            if (field.hasSpatialOptions()) {               
-                if (!this.isValid(field.spatial().validationGroup)) {
-                    valid = false;
-                }
-            }                      
-        });
 
         editedIndex.maps().forEach(map => {
             if (!this.isValid(map.validationGroup)) {
                 valid = false;
             }
         });
-
-        editedIndex.configuration().forEach(config => {
-            if (!this.isValid(config.validationGroup)) {
+        
+        let fieldsTabInvalid = false;
+        editedIndex.fields().forEach(field => {
+            if (!this.isValid(field.validationGroup)) {
                 valid = false;
+                fieldsTabInvalid = true;
+            }
+
+            if (field.hasSpatialOptions()) {
+                if (!this.isValid(field.spatial().validationGroup)) {
+                    valid = false;
+                    fieldsTabInvalid = true;
+                }
             }
         });
 
+        let configurationTabInvalid = false;
+        editedIndex.configuration().forEach(config => {
+            if (!this.isValid(config.validationGroup)) {
+                valid = false;
+                configurationTabInvalid = true;
+            }
+        });
+
+        // Navigate to invalid tab
+        if (fieldsTabInvalid) {
+            $('#tabsId a[href="#fields"]').tab('show');
+        } else if (configurationTabInvalid) {
+            $('#tabsId a[href="#configure"]').tab('show');
+        }
+        
         return valid;
     }
 
     save() {
-        const editedIndex = this.editedIndex();
-
-        if (!this.validate()) {
-            return;
-        }
-
-        this.saveInProgress(true);
-
-        //if index name has changed it isn't the same index
-        /* TODO
-        if (this.originalIndexName === this.indexName() && editedIndex.lockMode === "LockedIgnore") {
-            messagePublisher.reportWarning("Can not overwrite locked index: " + editedIndex.name() + ". " + 
-                                            "Any changes to the index will be ignored.");
-            return;
-        }*/
+        const editedIndex = this.editedIndex();      
         
-        const indexDto = editedIndex.toDto();
+        viewHelpers.asyncValidationCompleted(editedIndex.validationGroup, () => {
+            if (!this.validate()) {
+                return;
+            }
 
-        this.saveIndex(indexDto)
-            .always(() => this.saveInProgress(false));
+            this.saveInProgress(true);
+
+            //if index name has changed it isn't the same index
+            /* TODO
+            if (this.originalIndexName === this.indexName() && editedIndex.lockMode === "LockedIgnore") {
+                messagePublisher.reportWarning("Can not overwrite locked index: " + editedIndex.name() + ". " + 
+                                                "Any changes to the index will be ignored.");
+                return;
+            }*/
+
+            const indexDto = editedIndex.toDto();
+
+            this.saveIndex(indexDto)
+                .always(() => this.saveInProgress(false));
+        });
     }
 
-    private saveIndex(indexDto: Raven.Client.Documents.Indexes.IndexDefinition): JQueryPromise<Raven.Client.Documents.Indexes.PutIndexResult> {
+    private saveIndex(indexDto: Raven.Client.Documents.Indexes.IndexDefinition): JQueryPromise<string> {
         eventsCollector.default.reportEvent("index", "save");
-
-        const originalIndexName = indexDto.Name;
 
         if (indexDto.Name.startsWith(index.SideBySideIndexPrefix)) {
             // trim side by side prefix
@@ -475,14 +489,15 @@ class editIndex extends viewModelBase {
 
         return new saveIndexDefinitionCommand(indexDto, this.activeDatabase())
             .execute()
-            .done(() => {
-                this.dirtyFlag().reset();
+            .done((savedIndexName) => {
+                this.resetDirtyFlag();
+                
                 this.editedIndex().name.valueHasMutated();
                 //TODO: merge suggestion: var isSavingMergedIndex = this.mergeSuggestion() != null;
 
                 if (!this.isEditingExistingIndex()) {
                     this.isEditingExistingIndex(true);
-                    this.editExistingIndex(originalIndexName);
+                    this.editExistingIndex(savedIndexName); 
                 }
                 /* TODO merge suggestion
                 if (isSavingMergedIndex) {
@@ -491,10 +506,33 @@ class editIndex extends viewModelBase {
                     this.mergeSuggestion(null);
                 }*/
 
-                this.updateUrl(originalIndexName, false /* TODO isSavingMergedIndex */);
+                this.updateUrl(savedIndexName, false /* TODO isSavingMergedIndex */);
             });
     }
+    
+    private resetDirtyFlag() {
+        const indexDef: indexDefinition = this.editedIndex();
+        
+        if (indexDef.defaultFieldOptions()) {
+            indexDef.defaultFieldOptions().dirtyFlag().reset();
+        }
 
+        indexDef.fields().forEach((field) => {
+            field.spatial().dirtyFlag().reset();
+            field.dirtyFlag().reset();
+        });
+
+        indexDef.configuration().forEach((config) => {
+            config.dirtyFlag().reset();
+        });
+
+        indexDef.additionalSources().forEach((source) => {
+            source.dirtyFlag().reset();
+        });
+        
+        this.dirtyFlag().reset();
+    }
+    
     updateUrl(indexName: string, isSavingMergedIndex: boolean = false) {
         const url = appUrl.forEditIndex(indexName, this.activeDatabase());
         this.navigate(url);
@@ -598,8 +636,7 @@ class editIndex extends viewModelBase {
         $("#additionalSourceFilePicker").val(null);
     }
     
-    private onFileAdded(fileName: string, contents: string) {
-        const sources = this.editedIndex().additionalSources;
+    private onFileAdded(fileName: string, contents: string) {        
         const newItem = additionalSource.create(this.findUniqueNameForAdditionalSource(fileName), contents);
         this.editedIndex().additionalSources.push(newItem);
         this.selectedSourcePreview(newItem);
@@ -610,7 +647,7 @@ class editIndex extends viewModelBase {
         const existingItem = sources().find(x => x.name() === fileName);
         if (existingItem) {
             const extensionPosition = fileName.lastIndexOf(".");
-            const fileNameWoExtension = fileName.substr(0, extensionPosition - 1);
+            const fileNameWoExtension = fileName.substr(0, extensionPosition);
             
             let idx = 1;
             while (true) {

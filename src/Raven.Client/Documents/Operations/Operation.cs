@@ -10,6 +10,7 @@ using Raven.Client.Extensions;
 using Raven.Client.Http;
 using Raven.Client.Util;
 using Sparrow.Json;
+using Sparrow.Utils;
 
 namespace Raven.Client.Documents.Operations
 {
@@ -28,12 +29,19 @@ namespace Raven.Client.Documents.Operations
 
         internal long Id => _id;
 
+        public OperationStatusFetchMode StatusFetchMode { get; protected set; }
+
+        private bool _isProcessing;
+
         public Operation(RequestExecutor requestExecutor, Func<IDatabaseChanges> changes, DocumentConventions conventions, long id)
         {
             _requestExecutor = requestExecutor;
             _changes = changes;
             _conventions = conventions;
             _id = id;
+
+            StatusFetchMode = _conventions.OperationStatusFetchMode;
+            _isProcessing = true;
         }
 
         private async Task Initialize()
@@ -44,24 +52,95 @@ namespace Raven.Client.Documents.Operations
             }
             catch (Exception e)
             {
-                _result.TrySetException(e);
+                await _lock.WaitAsync().ConfigureAwait(false);
+
+                try
+                {
+                    StopProcessing();
+                }
+                catch
+                {
+                    // ignoring
+                }
+                finally
+                {
+                    _result.TrySetException(e);
+                    _lock.Release();
+                }
             }
         }
 
         protected virtual async Task Process()
         {
-            var changes = await _changes().EnsureConnectedNow().ConfigureAwait(false);
-            var observable = changes.ForOperationId(_id);
-            _subscription = observable.Subscribe(this);
-            await observable.EnsureSubscribedNow().ConfigureAwait(false);
+            _isProcessing = true;
 
-            await FetchOperationStatus().ConfigureAwait(false);
+            switch (StatusFetchMode)
+            {
+                case OperationStatusFetchMode.ChangesApi:
+                    var changes = await _changes().EnsureConnectedNow().ConfigureAwait(false);
+                    var observable = changes.ForOperationId(_id);
+                    _subscription = observable.Subscribe(this);
+                    await observable.EnsureSubscribedNow().ConfigureAwait(false);
+                    changes.ConnectionStatusChanged += OnConnectionStatusChanged;
+
+                    await FetchOperationStatus().ConfigureAwait(false);
+                    break;
+                case OperationStatusFetchMode.Polling:
+                    while (_isProcessing)
+                    {
+                        await FetchOperationStatus().ConfigureAwait(false);
+                        if (_isProcessing == false)
+                            break;
+
+                        await TimeoutManager.WaitFor(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+                    }
+                    break;
+                default:
+                    throw new NotSupportedException($"Invalid operation fetch status mode: '{StatusFetchMode}'");
+            }
+        }
+
+        private void OnConnectionStatusChanged(object sender, EventArgs e)
+        {
+            AsyncHelpers.RunSync(OnConnectionStatusChangedAsync);
+        }
+
+        private async Task OnConnectionStatusChangedAsync()
+        {
+            try
+            {
+                await FetchOperationStatus().ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                await _lock.WaitAsync().ConfigureAwait(false);
+
+                try
+                {
+                    StopProcessing();
+                }
+                catch
+                {
+                    // ignoring
+                }
+                finally
+                {
+                    _result.TrySetException(e);
+                    _lock.Release();
+                }
+            }
         }
 
         protected virtual void StopProcessing()
         {
-            _subscription?.Dispose();
-            _subscription = null;
+            if (StatusFetchMode == OperationStatusFetchMode.ChangesApi)
+            {
+                _changes().ConnectionStatusChanged -= OnConnectionStatusChanged;
+                _subscription?.Dispose();
+                _subscription = null;
+            }
+
+            _isProcessing = false;
         }
 
         /// <summary>
@@ -191,7 +270,7 @@ namespace Raven.Client.Documents.Operations
                     {
                         _lock.Release();
                     }
-                    
+
                     throw new TimeoutException($"After {timeout}, did not get a reply for operation " + _id);
                 }
 

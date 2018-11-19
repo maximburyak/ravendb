@@ -12,7 +12,6 @@ using Raven.Client.Util;
 using Raven.Server.Config;
 using Raven.Server.Documents;
 using Raven.Server.Documents.Indexes;
-using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 using Raven.Server.Utils;
 using Sparrow.Json;
@@ -101,7 +100,7 @@ namespace FastTests
             {
                 store.Initialize();
 
-                store.Maintenance.Server.Send(new DeleteDatabasesOperation(dbName, true));
+                store.Maintenance.Server.Send(new DeleteDatabasesOperation(dbName, true, timeToWaitForConfirmation: TimeSpan.FromSeconds(30)));
             }
         }
 
@@ -134,7 +133,8 @@ namespace FastTests
                         {
                             try
                             {
-                                await Server.ServerStore.DeleteDatabaseAsync(database, hardDelete: true, fromNodes: new[] { Server.ServerStore.NodeTag });
+                                var (index, _) = await Server.ServerStore.DeleteDatabaseAsync(database, hardDelete: true, fromNodes: new[] { Server.ServerStore.NodeTag });
+                                await Server.ServerStore.Cluster.WaitForIndexNotification(index);
                             }
                             catch (DatabaseDoesNotExistException)
                             {

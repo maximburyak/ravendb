@@ -23,7 +23,7 @@ namespace Raven.Server.Documents.Indexes
 
         private readonly Index _index;
 
-        private readonly TransactionContextPool _contextPool;
+        internal readonly TransactionContextPool _contextPool;
 
         public DocumentDatabase DocumentDatabase { get; }
 
@@ -98,35 +98,14 @@ namespace Raven.Server.Documents.Indexes
             }
         }
 
-        public void WriteDefinition(IndexDefinitionBase indexDefinition)
+        public void WriteDefinition(IndexDefinitionBase indexDefinition, TimeSpan? timeout = null)
         {
             using (_contextPool.AllocateOperationContext(out TransactionOperationContext context))
-            using (var tx = context.OpenWriteTransaction())
+            using (var tx = context.OpenWriteTransaction(timeout))
             {
                 indexDefinition.Persist(context, _environment.Options);
 
                 tx.Commit();
-            }
-        }
-
-        public void WritePriority(IndexPriority priority)
-        {
-            using (_contextPool.AllocateOperationContext(out TransactionOperationContext context))
-            using (var tx = context.OpenWriteTransaction())
-            {
-                var oldPriority = _index.Definition.Priority;
-                try
-                {
-                    _index.Definition.Priority = priority;
-                    _index.Definition.Persist(context, _environment.Options);
-
-                    tx.Commit();
-                }
-                catch (Exception)
-                {
-                    _index.Definition.Priority = oldPriority;
-                    throw;
-                }
             }
         }
 
@@ -152,27 +131,6 @@ namespace Raven.Server.Documents.Indexes
                 return IndexState.Normal;
 
             return (IndexState)state.Reader.ReadLittleEndianInt32();
-        }
-
-        public void WriteLock(IndexLockMode mode)
-        {
-            using (_contextPool.AllocateOperationContext(out TransactionOperationContext context))
-            using (var tx = context.OpenWriteTransaction())
-            {
-                var oldLockMode = _index.Definition.LockMode;
-                try
-                {
-                    _index.Definition.LockMode = mode;
-                    _index.Definition.Persist(context, _environment.Options);
-
-                    tx.Commit();
-                }
-                catch (Exception)
-                {
-                    _index.Definition.LockMode = oldLockMode;
-                    throw;
-                }
-            }
         }
 
         public unsafe List<IndexingError> ReadErrors()
@@ -568,6 +526,7 @@ namespace Raven.Server.Documents.Indexes
             {
                 foreach (var kvp in indexingScope.ReferenceEtagsByCollection)
                 {
+                    var lastIndexedEtag = ReadLastIndexedEtag(tx, kvp.Key);
                     var collectionEtagTree = tx.InnerTransaction.CreateTree("$" + kvp.Key); // $collection
                     foreach (var collections in kvp.Value)
                     {
@@ -583,6 +542,15 @@ namespace Raven.Server.Documents.Indexes
                             var oldEtag = result?.Reader.ReadLittleEndianInt64();
                             if (oldEtag >= etag)
                                 continue;
+
+                            if (oldEtag == lastIndexedEtag)
+                                continue;
+
+                            // we cannot set referenced etag value higher than last processed document from the main indexing functions
+                            // to avoid skipping document re-indexation when batch is being cancelled (e.g. due to memory limitations)
+                            // and changed are applied to references, not main documents (RDBC-128.IndexingOfLoadDocumentWhileChanged)
+                            if (etag > lastIndexedEtag)
+                                etag = lastIndexedEtag;
 
                             using (Slice.External(tx.InnerTransaction.Allocator, (byte*)&etag, sizeof(long), out Slice etagSlice))
                                 collectionEtagTree.Add(collectionKey, etagSlice);
@@ -674,19 +642,22 @@ namespace Raven.Server.Documents.Indexes
 
             static IndexSchema()
             {
-                Slice.From(StorageEnvironment.LabelsContext, "Type", ByteStringType.Immutable, out TypeSlice);
-                Slice.From(StorageEnvironment.LabelsContext, "CreatedTimestamp", ByteStringType.Immutable, out CreatedTimestampSlice);
-                Slice.From(StorageEnvironment.LabelsContext, "MapAttempts", ByteStringType.Immutable, out MapAttemptsSlice);
-                Slice.From(StorageEnvironment.LabelsContext, "MapSuccesses", ByteStringType.Immutable, out MapSuccessesSlice);
-                Slice.From(StorageEnvironment.LabelsContext, "MapErrors", ByteStringType.Immutable, out MapErrorsSlice);
-                Slice.From(StorageEnvironment.LabelsContext, "ReduceAttempts", ByteStringType.Immutable, out ReduceAttemptsSlice);
-                Slice.From(StorageEnvironment.LabelsContext, "ReduceSuccesses", ByteStringType.Immutable, out ReduceSuccessesSlice);
-                Slice.From(StorageEnvironment.LabelsContext, "ReduceErrors", ByteStringType.Immutable, out ReduceErrorsSlice);
-                Slice.From(StorageEnvironment.LabelsContext, "LastIndexingTime", ByteStringType.Immutable, out LastIndexingTimeSlice);
-                Slice.From(StorageEnvironment.LabelsContext, "Priority", ByteStringType.Immutable, out _);
-                Slice.From(StorageEnvironment.LabelsContext, "State", ByteStringType.Immutable, out StateSlice);
-                Slice.From(StorageEnvironment.LabelsContext, "ErrorTimestamps", ByteStringType.Immutable, out ErrorTimestampsSlice);
-                Slice.From(StorageEnvironment.LabelsContext, "MaxNumberOfOutputsPerDocument", ByteStringType.Immutable, out MaxNumberOfOutputsPerDocument);
+                using (StorageEnvironment.GetStaticContext(out var ctx))
+                {
+                    Slice.From(ctx, "Type", ByteStringType.Immutable, out TypeSlice);
+                    Slice.From(ctx, "CreatedTimestamp", ByteStringType.Immutable, out CreatedTimestampSlice);
+                    Slice.From(ctx, "MapAttempts", ByteStringType.Immutable, out MapAttemptsSlice);
+                    Slice.From(ctx, "MapSuccesses", ByteStringType.Immutable, out MapSuccessesSlice);
+                    Slice.From(ctx, "MapErrors", ByteStringType.Immutable, out MapErrorsSlice);
+                    Slice.From(ctx, "ReduceAttempts", ByteStringType.Immutable, out ReduceAttemptsSlice);
+                    Slice.From(ctx, "ReduceSuccesses", ByteStringType.Immutable, out ReduceSuccessesSlice);
+                    Slice.From(ctx, "ReduceErrors", ByteStringType.Immutable, out ReduceErrorsSlice);
+                    Slice.From(ctx, "LastIndexingTime", ByteStringType.Immutable, out LastIndexingTimeSlice);
+                    Slice.From(ctx, "Priority", ByteStringType.Immutable, out _);
+                    Slice.From(ctx, "State", ByteStringType.Immutable, out StateSlice);
+                    Slice.From(ctx, "ErrorTimestamps", ByteStringType.Immutable, out ErrorTimestampsSlice);
+                    Slice.From(ctx, "MaxNumberOfOutputsPerDocument", ByteStringType.Immutable, out MaxNumberOfOutputsPerDocument);
+                }
             }
         }
 

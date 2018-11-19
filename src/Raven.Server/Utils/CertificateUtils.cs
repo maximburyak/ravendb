@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography.X509Certificates;
@@ -27,10 +26,8 @@ namespace Raven.Server.Utils
         {
             CreateCertificateAuthorityCertificate(commonNameValue + " CA", out var ca, out var caSubjectName, log);
             CreateSelfSignedCertificateBasedOnPrivateKey(commonNameValue, caSubjectName, ca, false, false, 0, out var certBytes, log);
-            var selfSignedCertificateBasedOnPrivateKey = new X509Certificate2(certBytes);
-            log?.AppendLine($"Successfully loaded X509Certificate2 using certBytes with length: {certBytes.Length} ");
+            var selfSignedCertificateBasedOnPrivateKey = new X509Certificate2(certBytes, (string)null, X509KeyStorageFlags.MachineKeySet);
             selfSignedCertificateBasedOnPrivateKey.Verify();
-            log?.AppendLine($"Successfully verified chain for X509Certificate2: {Environment.NewLine}{selfSignedCertificateBasedOnPrivateKey}");
             return certBytes;
         }
 
@@ -47,7 +44,9 @@ namespace Raven.Server.Utils
             // will send the appropriate signers.
             // At least on Linux, this is done by looking at the _issuers_ of certs in the 
             // root store
-            using (var store = new X509Store(StoreName.Root, StoreLocation.CurrentUser))
+
+            var storeName = PlatformDetails.RunningOnMacOsx ? StoreName.My : StoreName.Root;
+            using (var store = new X509Store(storeName, StoreLocation.CurrentUser))
             {
                 store.Open(OpenFlags.ReadWrite);
 
@@ -74,7 +73,6 @@ namespace Raven.Server.Utils
                 5,
                 out certBytes);
 
-
             ValidateNoPrivateKeyInServerCert(serverCertBytes);
 
             Pkcs12Store store = new Pkcs12StoreBuilder().Build();
@@ -87,8 +85,8 @@ namespace Raven.Server.Utils
             store.Save(memoryStream, Array.Empty<char>(), GetSeededSecureRandom());
             certBytes = memoryStream.ToArray();
 
-            var cert = new X509Certificate2(certBytes, (string)null, X509KeyStorageFlags.PersistKeySet | X509KeyStorageFlags.Exportable);
-            RegisterCertificateInOperatingSystem(new X509Certificate2(cert.Export(X509ContentType.Cert)));
+            var cert = new X509Certificate2(certBytes, (string)null, X509KeyStorageFlags.PersistKeySet | X509KeyStorageFlags.Exportable | X509KeyStorageFlags.MachineKeySet);
+            RegisterCertificateInOperatingSystem(new X509Certificate2(cert.Export(X509ContentType.Cert), (string)null, X509KeyStorageFlags.MachineKeySet));
             return cert;
         }
 
@@ -96,7 +94,7 @@ namespace Raven.Server.Utils
         {
             var collection = new X509Certificate2Collection();
             // without the server private key here
-            collection.Import(serverCertBytes);
+            collection.Import(serverCertBytes, (string)null, X509KeyStorageFlags.MachineKeySet);
 
             if (new X509Certificate2Collection().OfType<X509Certificate2>().FirstOrDefault(x => x.HasPrivateKey) != null)
                 throw new InvalidOperationException("After export of CERT, still have private key from signer in certificate, should NEVER happen");
@@ -115,7 +113,7 @@ namespace Raven.Server.Utils
                 -1,
                 out var certBytes);
 
-            return new X509Certificate2(certBytes);
+            return new X509Certificate2(certBytes, (string)null, X509KeyStorageFlags.MachineKeySet);
         }
 
         public static void CreateSelfSignedCertificateBasedOnPrivateKey(string commonNameValue, 
@@ -194,12 +192,11 @@ namespace Raven.Server.Utils
             store.SetKeyEntry(friendlyName, keyEntry, new[] { certificateEntry });
             var stream = new MemoryStream();
             store.Save(stream, new char[0], random);
-            log?.AppendLine($"stream.Length = {stream.Length}");
-            log?.AppendLine($"stream.Position = {stream.Position}");
 
             certBytes = stream.ToArray();
 
             log?.AppendLine($"certBytes.Length = {certBytes.Length}");
+            log?.AppendLine($"cert in base64 = {Convert.ToBase64String(certBytes)}");
         }
 
         public static void CreateCertificateAuthorityCertificate(string commonNameValue, 

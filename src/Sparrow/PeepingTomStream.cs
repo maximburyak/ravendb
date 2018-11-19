@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Diagnostics;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using Sparrow.Json;
 
@@ -80,8 +81,9 @@ namespace Sparrow
             // search for the first byte which represent a single UTF charcter
             // (because 'start' might point to a byte in a middle of set of bytes
             // representing single character, so 0x80 represent start of char in utf8)
-            var originalStart = start;            
-            while ((_bufferWindow.Buffer.Array[start] & 0x80) != 0)
+            var originalStart = start;
+
+            for (var p = _bufferWindow.Pointer; (*(p + start) & 0x80) != 0; p++)
             {
                 start++;                
                 size--;
@@ -110,9 +112,9 @@ namespace Sparrow
             }
         }
 
-        public async Task<int> ReadAsync(byte[] buffer, int offset, int count)
+        public async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken token = default)
         {
-            var read = await _stream.ReadAsync(buffer, offset, count).ConfigureAwait(false);
+            var read = await _stream.ReadAsync(buffer, offset, count, token).ConfigureAwait(false);
             var rc = ReadInternal(buffer, offset, read);
 
             return rc;

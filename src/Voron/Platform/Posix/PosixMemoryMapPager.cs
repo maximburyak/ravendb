@@ -14,7 +14,6 @@ namespace Voron.Platform.Posix
     public sealed unsafe class PosixMemoryMapPager : PosixAbstractPager
     {
         private readonly StorageEnvironmentOptions _options;
-        private int _fd;
         public readonly long SysPageSize;
         private long _totalAllocationSize;
         private readonly bool _isSyncDirAllowed;
@@ -152,7 +151,7 @@ namespace Voron.Platform.Posix
                 Syscall.ThrowLastError(err, "mmap on " + FileName);
             }
 
-            NativeMemory.RegisterFileMapping(FileName.FullPath, startingBaseAddressPtr, fileSize);
+            NativeMemory.RegisterFileMapping(FileName.FullPath, startingBaseAddressPtr, fileSize, GetAllocatedInBytes);
 
             var allocationInfo = new PagerState.AllocationInfo
             {
@@ -203,19 +202,6 @@ namespace Voron.Platform.Posix
             return FileName.FullPath;
         }
 
-        public override void ReleaseAllocationInfo(byte* baseAddress, long size)
-        {
-            base.ReleaseAllocationInfo(baseAddress, size);
-            var ptr = new IntPtr(baseAddress);
-            var result = Syscall.munmap(ptr, (UIntPtr)size);
-            if (result == -1)
-            {
-                var err = Marshal.GetLastWin32Error();
-                Syscall.ThrowLastError(err, "munmap " + FileName);
-            }
-            NativeMemory.UnregisterFileMapping(FileName.FullPath, ptr, size);
-        }
-
         internal override void ProtectPageRange(byte* start, ulong size, bool force = false)
         {
             if (size == 0)
@@ -241,16 +227,6 @@ namespace Voron.Platform.Posix
                     return;
                 var err = Marshal.GetLastWin32Error();
                 Debugger.Break();
-            }
-        }
-
-
-        protected override void DisposeInternal()
-        {
-            if (_fd != -1)
-            {
-                Syscall.close(_fd);
-                _fd = -1;
             }
         }
     }

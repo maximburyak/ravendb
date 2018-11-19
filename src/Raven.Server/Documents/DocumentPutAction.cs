@@ -41,7 +41,7 @@ namespace Raven.Server.Documents
             if (context.Transaction == null)
             {
                 ThrowRequiresTransaction();
-                return default(PutOperationResults); // never hit
+                return default; // never hit
             }
 
 #if DEBUG
@@ -150,8 +150,7 @@ namespace Raven.Server.Documents
                             ref flags, out RevisionsCollectionConfiguration configuration);
                         if (shouldVersion)
                         {
-                            _documentDatabase.DocumentsStorage.RevisionsStorage.Put(context, id, document, flags, nonPersistentFlags,
-                                changeVector, modifiedTicks, configuration, collectionName);
+                            _documentDatabase.DocumentsStorage.RevisionsStorage.Put(context, id, document, flags, nonPersistentFlags, changeVector, modifiedTicks, configuration, collectionName);
                         }
                     }
                 }
@@ -463,17 +462,28 @@ namespace Raven.Server.Documents
         [Conditional("DEBUG")]
         public static void AssertMetadataWasFiltered(BlittableJsonReaderObject data)
         {
-            if (data.TryGet(Constants.Documents.Metadata.Key, out BlittableJsonReaderObject metadata) == false)
-                return;
+            var originalNoCacheValue = data.NoCache;
 
-            var names = metadata.GetPropertyNames();
-            if (names.Contains(Constants.Documents.Metadata.Id, StringComparer.OrdinalIgnoreCase) ||
-                names.Contains(Constants.Documents.Metadata.LastModified, StringComparer.OrdinalIgnoreCase) ||
-                names.Contains(Constants.Documents.Metadata.IndexScore, StringComparer.OrdinalIgnoreCase) ||
-                names.Contains(Constants.Documents.Metadata.ChangeVector, StringComparer.OrdinalIgnoreCase) ||
-                names.Contains(Constants.Documents.Metadata.Flags, StringComparer.OrdinalIgnoreCase))
+            data.NoCache = true;
+
+            try
             {
-                throw new InvalidOperationException("Document's metadata should filter properties on before put to storage." + Environment.NewLine + data);
+                if (data.TryGet(Constants.Documents.Metadata.Key, out BlittableJsonReaderObject metadata) == false)
+                    return;
+
+                var names = metadata.GetPropertyNames();
+                if (names.Contains(Constants.Documents.Metadata.Id, StringComparer.OrdinalIgnoreCase) ||
+                    names.Contains(Constants.Documents.Metadata.LastModified, StringComparer.OrdinalIgnoreCase) ||
+                    names.Contains(Constants.Documents.Metadata.IndexScore, StringComparer.OrdinalIgnoreCase) ||
+                    names.Contains(Constants.Documents.Metadata.ChangeVector, StringComparer.OrdinalIgnoreCase) ||
+                    names.Contains(Constants.Documents.Metadata.Flags, StringComparer.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException("Document's metadata should filter properties on before put to storage." + Environment.NewLine + data);
+                }
+            }
+            finally
+            {
+                data.NoCache = originalNoCacheValue;
             }
         }
     }

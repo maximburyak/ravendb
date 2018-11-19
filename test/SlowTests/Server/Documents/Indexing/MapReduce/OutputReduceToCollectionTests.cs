@@ -5,6 +5,7 @@ using FastTests;
 using Raven.Client.Documents;
 using Raven.Client.Documents.Indexes;
 using Raven.Client.Documents.Operations;
+using Raven.Client.Documents.Operations.Indexes;
 using Raven.Client.Documents.Queries;
 using Raven.Client.Exceptions.Documents.Indexes;
 using Xunit;
@@ -102,10 +103,8 @@ namespace SlowTests.Server.Documents.Indexing.MapReduce
                 }
 
                 var exception = await Assert.ThrowsAsync<IndexInvalidException>(async () => await CreateDataAndIndexes(store));
-                Assert.Contains("In order to create the 'DailyInvoicesIndex' index " +
-                                "which would output reduce results to documents in the 'DailyInvoices' collection, " +
-                                "you firstly need to delete all of the documents in the 'DailyInvoices' collection" +
-                                " (currently have 1 document).", exception.Message);
+                Assert.Contains("Index 'DailyInvoicesIndex' is defined to output the Reduce results to documents in Collection 'DailyInvoices'." +
+                                " This collection currently has 1 document . All documents in Collection 'DailyInvoices' must be deleted first.", exception.Message);
             }
         }
 
@@ -135,6 +134,29 @@ namespace SlowTests.Server.Documents.Indexing.MapReduce
                 WaitForIndexing(store);
 
                 await store.ExecuteIndexAsync(new Replacement.DailyInvoicesIndex());
+                WaitForIndexing(store);
+
+                using (var session = store.OpenAsyncSession())
+                {
+                    Assert.Equal(120, await session.Query<Invoice>().CountAsync());
+                    Assert.Equal(93, await session.Query<DailyInvoice>().CountAsync());
+                    Assert.Equal(31, await session.Query<MonthlyInvoice>().CountAsync());
+                    Assert.Equal(4, await session.Query<YearlyInvoice>().CountAsync());
+                }
+            }
+        }
+
+        [Fact]
+        public async Task CanResetIndex()
+        {
+            using (var store = GetDocumentStore())
+            {
+                await CreateDataAndIndexes(store);
+
+                await store.Maintenance.SendAsync(new ResetIndexOperation(new DailyInvoicesIndex().IndexName));
+                await store.Maintenance.SendAsync(new ResetIndexOperation(new MonthlyInvoicesIndex().IndexName));
+                await store.Maintenance.SendAsync(new ResetIndexOperation(new YearlyInvoicesIndex().IndexName));
+
                 WaitForIndexing(store);
 
                 using (var session = store.OpenAsyncSession())

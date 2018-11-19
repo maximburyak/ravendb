@@ -28,6 +28,7 @@ using Raven.Server.Utils;
 using Sparrow;
 using Sparrow.Threading;
 using Sparrow.Utils;
+using Raven.Client.Exceptions.Security;
 
 namespace Raven.Server.Documents.Replication
 {
@@ -102,7 +103,7 @@ namespace Raven.Server.Documents.Replication
         public void Start()
         {
             _longRunningSendingWork =
-                PoolOfThreads.GlobalRavenThreadPool.LongRunning(x => ReplicateToDestination(), null, OutgoingReplicationThreadName);            
+                PoolOfThreads.GlobalRavenThreadPool.LongRunning(x => ReplicateToDestination(), null, OutgoingReplicationThreadName);
         }
 
         public string OutgoingReplicationThreadName => $"Outgoing replication {FromToString}";
@@ -215,7 +216,7 @@ namespace Raven.Server.Documents.Replication
                             throw;
                         }
 
-                        DateTime nextReplicateAt = default(DateTime);
+                        DateTime nextReplicateAt = default;
 
                         while (_cts.IsCancellationRequested == false)
                         {
@@ -243,6 +244,8 @@ namespace Raven.Server.Documents.Replication
                                                 _parent.EnsureNotDeleted(dest.NodeTag);
                                             }
                                             var didWork = documentSender.ExecuteReplicationOnce(scope, ref nextReplicateAt);
+                                            if (documentSender.MissingAttachmentsInLastBatch)
+                                                continue;
                                             if (didWork == false)
                                                 break;
 
@@ -310,7 +313,7 @@ namespace Raven.Server.Documents.Replication
                                         SendHeartbeat(null);
                                     }
                                     else
-                                    {                                        
+                                    {
                                         //Send a heartbeat first so we will get an updated CV of the destination
                                         var currentChangeVector = DocumentsStorage.GetDatabaseChangeVector(ctx);
                                         SendHeartbeat(null);
@@ -354,7 +357,7 @@ namespace Raven.Server.Documents.Replication
                         HandleIOException(ioe);
                     }
                 }
-                
+
                 HandleException(e);
             }
             catch (OperationCanceledException e)
@@ -387,7 +390,7 @@ namespace Raven.Server.Documents.Replication
                 {
                     if (e.InnerException is SocketException)
                         _log.Info($"SocketException was thrown from the connection to remote node ({FromToString}). " +
-                                  $"This might mean that the remote node is done or there is a network issue.", e);
+                                  "This might mean that the remote node is done or there is a network issue.", e);
                     else
                         _log.Info($"IOException was thrown from the connection to remote node ({FromToString}).", e);
                 }
@@ -398,7 +401,7 @@ namespace Raven.Server.Documents.Replication
             {
                 if (_log.IsInfoEnabled)
                     _log.Info($"Unexpected exception occurred on replication thread ({FromToString}). " +
-                              $"Replication stopped (will be retried later).", e);
+                              "Replication stopped (will be retried later).", e);
                 Failed?.Invoke(this, e);
             }
         }
@@ -449,7 +452,7 @@ namespace Raven.Server.Documents.Replication
             {
                 _database.NotificationCenter.AddAfterTransactionCommit(
                     AlertRaised.Create(
-                        _database.Name, 
+                        _database.Name,
                         AlertTitle, msg, AlertType.Replication, NotificationSeverity.Warning, key: FromToString, details: new ExceptionDetails(e)),
                     txw);
 
@@ -462,15 +465,23 @@ namespace Raven.Server.Documents.Replication
             using (_database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext documentsContext))
             using (var writer = new BlittableJsonTextWriter(documentsContext, _stream))
             {
-                documentsContext.Write(writer, new DynamicJsonValue
+                var parameters = new TcpNegotiateParameters
                 {
-                    [nameof(TcpConnectionHeaderMessage.DatabaseName)] = Destination.Database, // _parent.Database.Name,
-                    [nameof(TcpConnectionHeaderMessage.Operation)] = TcpConnectionHeaderMessage.OperationTypes.Replication.ToString(),
-                    [nameof(TcpConnectionHeaderMessage.SourceNodeTag)] = _parent._server.NodeTag,
-                    [nameof(TcpConnectionHeaderMessage.OperationVersion)] = TcpConnectionHeaderMessage.ReplicationTcpVersion
-                });
-                writer.Flush();
-                ReadHeaderResponseAndThrowIfUnAuthorized(documentsContext, writer);
+                    Database = Destination.Database,
+                    Operation = TcpConnectionHeaderMessage.OperationTypes.Replication,
+                    SourceNodeTag = _parent._server.NodeTag,
+                    DestinationNodeTag = GetNode(),
+                    DestinationUrl = Destination.Url,
+                    ReadResponseAndGetVersionCallback = ReadHeaderResponseAndThrowIfUnAuthorized,
+                    Version = TcpConnectionHeaderMessage.ReplicationTcpVersion
+                };
+                //This will either throw or return acceptable protocol version.
+                SupportedFeatures = TcpNegotiation.NegotiateProtocolVersion(documentsContext, _stream, parameters);
+                if (SupportedFeatures.ProtocolVersion <= 0)
+                {
+                    throw new InvalidOperationException(
+                        $"{OutgoingReplicationThreadName}: TCP negotiation resulted with an invalid protocol version:{SupportedFeatures.ProtocolVersion}");
+                }
                 //start request/response for fetching last etag
                 var request = new DynamicJsonValue
                 {
@@ -486,10 +497,10 @@ namespace Raven.Server.Documents.Replication
                 writer.Flush();
             }
         }
-
-        private void ReadHeaderResponseAndThrowIfUnAuthorized(DocumentsOperationContext documentsContext, BlittableJsonTextWriter writer)
+        private int ReadHeaderResponseAndThrowIfUnAuthorized(JsonOperationContext context, BlittableJsonTextWriter writer, Stream stream, string url)
         {
-            const int timeout = 2 * 60 * 1000; 
+            const int timeout = 2 * 60 * 1000;
+
             using (var replicationTcpConnectReplyMessage = _interruptibleRead.ParseToMemory(
                 _connectionDisposed,
                 "replication acknowledge response",
@@ -509,25 +520,35 @@ namespace Raven.Server.Documents.Replication
                 switch (headerResponse.Status)
                 {
                     case TcpConnectionStatus.Ok:
-                        break;
+                        return headerResponse.Version;
                     case TcpConnectionStatus.AuthorizationFailed:
-                        throw new UnauthorizedAccessException($"{Destination.FromString()} replied with failure {headerResponse.Message}");
+                        throw new AuthorizationException($"{Destination.FromString()} replied with failure {headerResponse.Message}");
                     case TcpConnectionStatus.TcpVersionMismatch:
-                        //Kindly request the server to drop the connection
-                        documentsContext.Write(writer, new DynamicJsonValue
+                        if (headerResponse.Version != TcpNegotiation.OutOfRangeStatus)
                         {
-                            [nameof(TcpConnectionHeaderMessage.DatabaseName)] = Destination.Database, 
-                            [nameof(TcpConnectionHeaderMessage.Operation)] = TcpConnectionHeaderMessage.OperationTypes.Drop.ToString(),
-                            [nameof(TcpConnectionHeaderMessage.SourceNodeTag)] = _parent._server.NodeTag,
-                            [nameof(TcpConnectionHeaderMessage.OperationVersion)] = TcpConnectionHeaderMessage.GetOperationTcpVersion(TcpConnectionHeaderMessage.OperationTypes.Drop),
-                            [nameof(TcpConnectionHeaderMessage.Info)] = $"Couldn't agree on replication tcp version ours:{TcpConnectionHeaderMessage.ReplicationTcpVersion} theirs:{headerResponse.Version}"
-                        });
-                        writer.Flush();
+                            return headerResponse.Version;
+                        }
+                        //Kindly request the server to drop the connection
+                        SendDropMessage(context, writer, headerResponse);
                         throw new InvalidOperationException($"{Destination.FromString()} replied with failure {headerResponse.Message}");
                     default:
                         throw new InvalidOperationException($"{Destination.FromString()} replied with unknown status {headerResponse.Status}, message:{headerResponse.Message}");
                 }
             }
+        }
+
+        private void SendDropMessage(JsonOperationContext context, BlittableJsonTextWriter writer, TcpConnectionHeaderResponse headerResponse)
+        {
+            context.Write(writer, new DynamicJsonValue
+            {
+                [nameof(TcpConnectionHeaderMessage.DatabaseName)] = Destination.Database,
+                [nameof(TcpConnectionHeaderMessage.Operation)] = TcpConnectionHeaderMessage.OperationTypes.Drop.ToString(),
+                [nameof(TcpConnectionHeaderMessage.SourceNodeTag)] = _parent._server.NodeTag,
+                [nameof(TcpConnectionHeaderMessage.OperationVersion)] = TcpConnectionHeaderMessage.GetOperationTcpVersion(TcpConnectionHeaderMessage.OperationTypes.Drop),
+                [nameof(TcpConnectionHeaderMessage.Info)] =
+                    $"Couldn't agree on replication TCP version ours:{TcpConnectionHeaderMessage.ReplicationTcpVersion} theirs:{headerResponse.Version}"
+            });
+            writer.Flush();
         }
 
         private bool WaitForChanges(int timeout, CancellationToken token)
@@ -599,26 +620,26 @@ namespace Raven.Server.Documents.Replication
             {
                 if (string.IsNullOrEmpty(context.LastDatabaseChangeVector))
                     context.LastDatabaseChangeVector = DocumentsStorage.GetDatabaseChangeVector(context);
-                
+
                 var status = ChangeVectorUtils.GetConflictStatus(_replicationBatchReply.DatabaseChangeVector,
                     context.LastDatabaseChangeVector);
 
                 if (status != ConflictStatus.AlreadyMerged)
                     return 0;
 
-                var result = ChangeVectorUtils.TryUpdateChangeVector(_replicationBatchReply.NodeTag, _dbId, _replicationBatchReply.CurrentEtag, context.LastDatabaseChangeVector);                
+                var result = ChangeVectorUtils.TryUpdateChangeVector(_replicationBatchReply.NodeTag, _dbId, _replicationBatchReply.CurrentEtag, context.LastDatabaseChangeVector);
                 if (result.IsValid)
                 {
-                    if(context.LastReplicationEtagFrom == null)
+                    if (context.LastReplicationEtagFrom == null)
                         context.LastReplicationEtagFrom = new Dictionary<string, long>();
 
                     if (context.LastReplicationEtagFrom.ContainsKey(_replicationBatchReply.DatabaseId) == false)
                     {
                         context.LastReplicationEtagFrom[_replicationBatchReply.DatabaseId] = _replicationBatchReply.CurrentEtag;
                     }
-                    
+
                     context.LastDatabaseChangeVector = result.ChangeVector;
-                    
+
                     context.Transaction.InnerTransaction.LowLevelTransaction.OnDispose += _ =>
                     {
                         try
@@ -800,10 +821,7 @@ namespace Raven.Server.Documents.Replication
                     UpdateDestinationChangeVector(replicationBatchReply);
                     OnSuccessfulTwoWaysCommunication();
                     break;
-                default:
-                    var msg = $"Received error from remote replication destination. Error received: {replicationBatchReply.Exception}";
-                    if (_log.IsInfoEnabled)
-                        _log.Info(msg);
+                case ReplicationMessageReply.ReplyType.MissingAttachments:
                     break;
             }
 
@@ -820,10 +838,13 @@ namespace Raven.Server.Documents.Replication
                             $"Received reply for replication batch from {Destination.FromString()}. There has been a failure, error string received : {replicationBatchReply.Exception}");
                         throw new InvalidOperationException(
                             $"Received failure reply for replication batch. Error string received = {replicationBatchReply.Exception}");
+                    case ReplicationMessageReply.ReplyType.MissingAttachments:
+                        _log.Info($"Received reply for replication batch from {Destination.FromString()}. Destination is reporting missing attachments.");
+                        break;
                     default:
                         throw new ArgumentOutOfRangeException(nameof(replicationBatchReply),
-                            "Received reply for replication batch with unrecognized type... got " +
-                            replicationBatchReply.Type);
+                            $"Received reply for replication batch with unrecognized type {replicationBatchReply.Type}" +
+                            $"raw: {replicationBatchReplyMessage}");
                 }
             }
             return replicationBatchReply;
@@ -839,6 +860,7 @@ namespace Raven.Server.Documents.Replication
 
         private readonly SingleUseFlag _disposed = new SingleUseFlag();
         private readonly DateTime _startedAt = DateTime.UtcNow;
+        public TcpConnectionHeaderMessage.SupportedFeatures SupportedFeatures { get; private set; }
 
         public void Dispose()
         {
@@ -855,7 +877,7 @@ namespace Raven.Server.Documents.Replication
             _cts.Cancel();
 
             DisposeTcpClient();
-            
+
             _connectionDisposed.Set();
 
             if (_longRunningSendingWork != null && _longRunningSendingWork != PoolOfThreads.LongRunningWork.Current)
@@ -867,7 +889,7 @@ namespace Raven.Server.Documents.Replication
                     DisposeTcpClient();
                 }
             }
-            
+
             try
             {
                 _cts.Dispose();

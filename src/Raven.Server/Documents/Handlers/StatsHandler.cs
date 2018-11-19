@@ -13,7 +13,7 @@ namespace Raven.Server.Documents.Handlers
 {
     public class StatsHandler : DatabaseRequestHandler
     {
-        [RavenAction("/databases/*/stats", "GET", AuthorizationStatus.ValidUser)]
+        [RavenAction("/databases/*/stats", "GET", AuthorizationStatus.ValidUser, IsDebugInformationEndpoint = true)]
         public Task Stats()
         {
             using (ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
@@ -22,7 +22,7 @@ namespace Raven.Server.Documents.Handlers
             {
                 var indexes = Database.IndexStore.GetIndexes().ToList();
 
-                var sizeOnDiskInBytes = Database.GetSizeOnDiskInBytes();
+                var size = Database.GetSizeOnDisk();
 
                 var stats = new DatabaseStatistics
                 {
@@ -32,7 +32,8 @@ namespace Raven.Server.Documents.Handlers
                     CountOfDocumentsConflicts = Database.DocumentsStorage.ConflictsStorage.GetNumberOfDocumentsConflicts(context),
                     CountOfTombstones = Database.DocumentsStorage.GetNumberOfTombstones(context),
                     CountOfConflicts = Database.DocumentsStorage.ConflictsStorage.ConflictsCount,
-                    SizeOnDisk = new Size(sizeOnDiskInBytes),
+                    SizeOnDisk = size.Data,
+                    TempBuffersSizeOnDisk = size.TempBuffers,
                     NumberOfTransactionMergerQueueOperations = Database.TxMerger.NumberOfQueuedOperations
                 };
 
@@ -114,7 +115,7 @@ namespace Raven.Server.Documents.Handlers
                     },
                     [nameof(Database.Metrics.Attachments)] = new DynamicJsonValue
                     {
-                        [nameof(Database.Metrics.Attachments.PutsPerSec)] = Database.Metrics.Docs.PutsPerSec.CreateMeterData(true, empty)
+                        [nameof(Database.Metrics.Attachments.PutsPerSec)] = Database.Metrics.Attachments.PutsPerSec.CreateMeterData(true, empty)
                     }
                 });
             }
@@ -138,7 +139,7 @@ namespace Raven.Server.Documents.Handlers
                     },
                     [nameof(Database.Metrics.Attachments)] = new DynamicJsonValue
                     {
-                        [nameof(Database.Metrics.Attachments.BytesPutsPerSec)] = Database.Metrics.Docs.BytesPutsPerSec.CreateMeterData(true, empty)
+                        [nameof(Database.Metrics.Attachments.BytesPutsPerSec)] = Database.Metrics.Attachments.BytesPutsPerSec.CreateMeterData(true, empty)
                     }
                 });
             }

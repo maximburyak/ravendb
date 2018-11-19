@@ -1,9 +1,16 @@
 using System;
 using System.Threading.Tasks;
 using FastTests.Server.Documents.Queries.Parser;
+using FastTests.Voron.Backups;
+using FastTests.Voron.Compaction;
+using SlowTests.Authentication;
+using SlowTests.Bugs.MapRedue;
 using SlowTests.Client;
+using SlowTests.Client.Attachments;
 using SlowTests.Issues;
 using SlowTests.MailingList;
+using Sparrow.Logging;
+using StressTests.Client.Attachments;
 
 namespace Tryouts
 {
@@ -11,15 +18,19 @@ namespace Tryouts
     {
         public static async Task Main(string[] args)
         {
-            for (int i = 0; i < 100; i++)
+            try
             {
-                Console.WriteLine(i);
-                using (var test = new ParserTests())
+                using (var test = new RavenDB_11734())
                 {
-                    test.ParseAndWriteAst(q: "(State = 2 OR Act = 'Wait') OR NOT User = 'Admin'", o:
-                        "{\"Type\":\"Or\",\"Left\":{\"Type\":\"Or\",\"Left\":{\"Type\":\"Equal\",\"Left\":\"State\",\"Right\":2},\"Right\":{\"Type\":\"Equal\",\"Left\":\"Act\",\"Right\":\"Wait\"}},\"Right\":{\"Type\":\"Not\",\"Expression\":{\"Type\":\"Equal\",\"Left\":\"User\",\"Right\":\"Admin\"}}}");
+                    await test.Index_Queries_Should_Not_Return_Deleted_Documents();
                 }
             }
+            catch (Exception e)
+            {
+                Console.WriteLine(e);
+            }
+
+            
         }
     }
 }

@@ -49,12 +49,25 @@ namespace Raven.Server.Documents.Handlers.Debugging
             using (ServerStore.ContextPool.AllocateOperationContext(out JsonOperationContext context))
             using (var write = new BlittableJsonTextWriter(context, ResponseBodyStream()))
             {
-                context.Write(write,ServerStore.Engine.InMemoryDebug.ToJson());
+                context.Write(write, ServerStore.Engine.InMemoryDebug.ToJson());
                 write.Flush();
             }
             return Task.CompletedTask;
         }
-        
+
+        [RavenAction("/admin/debug/node/state-change-history", "GET", AuthorizationStatus.Operator, IsDebugInformationEndpoint = true)]
+        public Task GetStateChangeHistory()
+        {
+            using (ServerStore.ContextPool.AllocateOperationContext(out JsonOperationContext context))
+            using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
+            {
+                writer.WriteStartObject();
+                writer.WriteArray("States", ServerStore.Engine.PrevStates.Select(s => s.ToString()));
+                writer.WriteEndObject();
+            }
+            return Task.CompletedTask;
+        }
+
         [RavenAction("/admin/debug/node/ping", "GET", AuthorizationStatus.Operator, IsDebugInformationEndpoint = true)]
         public async Task PingTest()
         {
@@ -73,7 +86,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
                 var url = topology.GetUrlFromTag(dest);
                 tasks.Add(PingOnce(url ?? dest));
             }
-            
+
             using (ServerStore.ContextPool.AllocateOperationContext(out JsonOperationContext context))
             using (var write = new BlittableJsonTextWriter(context, ResponseBodyStream()))
             {
@@ -117,7 +130,7 @@ namespace Raven.Server.Documents.Handlers.Debugging
                 };
             }
         }
-        
+
         private async Task<PingResult> PingOnce(string url)
         {
             var sp = Stopwatch.StartNew();

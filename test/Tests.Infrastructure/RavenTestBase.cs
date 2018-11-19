@@ -59,15 +59,15 @@ namespace FastTests
             if (Servers.Count == 0)
                 return;
 
-            var tasks = Servers
+            var tasks = Servers.Where(s => s.ServerStore.Engine.CurrentState != RachisState.Passive)
                 .Select(server => server.ServerStore.Cluster.WaitForIndexNotification(index))
                 .ToList();
 
             if (await Task.WhenAll(tasks).WaitAsync(timeout))
                 return;
 
-            var message = $"Timed out waiting for {index} after {timeout} because out of {Servers.Count} " +
-                          " we got confirmations that it was applied only on to following servers: ";
+            var message = $"Timed out after {timeout} waiting for index {index} because out of {Servers.Count} servers" +
+                          " we got confirmations that it was applied only on the following servers: ";
 
             for (var i = 0; i < tasks.Count; i++)
             {
@@ -175,7 +175,6 @@ namespace FastTests
                         }
 
                         Assert.True(result.RaftCommandIndex > 0); //sanity check             
-                        store.Urls = result.NodesAddedTo.SelectMany(UseFiddler).ToArray();
                         var timeout = TimeSpan.FromMinutes(Debugger.IsAttached ? 5 : 1);
                         AsyncHelpers.RunSync(async () =>
                         {
@@ -205,7 +204,7 @@ namespace FastTests
                             }
                             catch (DatabaseDisabledException)
                             {
-                                continue;
+                                // ignoring
                             }
                             catch (DatabaseNotRelevantException)
                             {
@@ -242,9 +241,7 @@ namespace FastTests
                                 {
                                     continue;
                                 }
-
-                                AsyncHelpers.RunSync(async () => await server.ServerStore.Cluster.WaitForIndexNotification(result.RaftCommandIndex));
-                            }
+                             }
                         }
                     };
                     CreatedStores.Add(store);
@@ -450,7 +447,7 @@ namespace FastTests
             } while (true);
         }
 
-        public static void WaitForUserToContinueTheTest(string url, bool debug = true, int port = 8079)
+        public static void WaitForUserToContinueTheTest(string url, bool debug = true)
         {
             if (debug && Debugger.IsAttached == false)
                 return;
@@ -466,7 +463,7 @@ namespace FastTests
             } while (debug == false || Debugger.IsAttached);
         }
 
-        public static void WaitForUserToContinueTheTest(IDocumentStore documentStore, bool debug = true, int port = 8079, string database = null)
+        public static void WaitForUserToContinueTheTest(IDocumentStore documentStore, bool debug = true, string database = null)
         {
             if (debug && Debugger.IsAttached == false)
                 return;
@@ -482,6 +479,8 @@ namespace FastTests
             {
                 Thread.Sleep(500);
             } while (documentStore.Commands(database).Head("Debug/Done") == null && (debug == false || Debugger.IsAttached));
+
+            documentStore.Commands(database).Delete("Debug/Done", null);
         }
 
         protected ManualResetEventSlim WaitForIndexBatchCompleted(IDocumentStore store, Func<(string IndexName, bool DidWork), bool> predicate)
@@ -506,38 +505,12 @@ namespace FastTests
             CreatedStores.Clear();
         }
 
-        protected X509Certificate2 CreateAndPutClientCertificate(string serverCertPath,
-            RavenServer.CertificateHolder serverCertificateHolder,
-            Dictionary<string, DatabaseAccess> permissions,
-            SecurityClearance clearance,
-            RavenServer server = null)
-        {
-            var clientCertificate = CertificateUtils.CreateSelfSignedClientCertificate("RavenTestsClient", serverCertificateHolder, out var clietnCertBytes);
-            var serverCertificate = new X509Certificate2(serverCertPath);
-            using (var store = GetDocumentStore(new Options
-            {
-                AdminCertificate = serverCertificate,
-                Server = server
-            }))
-            {
-                var requestExecutor = store.GetRequestExecutor();
-                using (requestExecutor.ContextPool.AllocateOperationContext(out JsonOperationContext context))
-                {
-                    var command = new PutClientCertificateOperation("RavenTestsClient", clientCertificate, permissions, clearance)
-                        .GetCommand(store.Conventions, context);
-
-                    requestExecutor.Execute(command, context);
-                }
-            }
-            return new X509Certificate2(clietnCertBytes);
-        }
-
         protected X509Certificate2 AskServerForClientCertificate(string serverCertPath, Dictionary<string, DatabaseAccess> permissions, SecurityClearance clearance = SecurityClearance.ValidUser, RavenServer server = null)
         {
             X509Certificate2 serverCertificate;
             try
             {
-                serverCertificate = new X509Certificate2(serverCertPath);
+                serverCertificate = new X509Certificate2(serverCertPath, (string)null, X509KeyStorageFlags.MachineKeySet);
             }
             catch (CryptographicException e)
             {
@@ -567,7 +540,7 @@ namespace FastTests
                         {
                             var destination = new MemoryStream();
                             stream.CopyTo(destination);
-                            clientCertificate = new X509Certificate2(destination.ToArray());
+                            clientCertificate = new X509Certificate2(destination.ToArray(), (string)null, X509KeyStorageFlags.MachineKeySet);
                         }
                     }
                 }

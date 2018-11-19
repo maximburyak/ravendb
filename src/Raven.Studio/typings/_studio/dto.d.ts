@@ -221,7 +221,7 @@ interface replicationConflictListItemDto {
     LastModified: string;
 }
 
-type databaseDisconnectionCause = "Error" | "DatabaseDeleted" | "DatabaseDisabled" | "ChangingDatabase";
+type databaseDisconnectionCause = "Error" | "DatabaseDeleted" | "DatabaseDisabled" | "ChangingDatabase" | "DatabaseIsNotRelevant";
 
 type querySortType = "Ascending" | "Descending" | "Range Ascending" | "Range Descending";
 
@@ -232,7 +232,7 @@ interface recentErrorDto extends Raven.Server.NotificationCenter.Notifications.N
 
 declare module studio.settings {
     type numberFormatting = "raw" | "formatted";
-    type dontShowAgain = "EditSystemDocument";
+    type dontShowAgain = "UnsupportedBrowser";
     type saveLocation = "local" | "remote";
     type usageEnvironment = "Default" | "Dev" | "Test" | "Prod";
 }
@@ -399,5 +399,12 @@ interface resourceStyleMap {
     styleMap: any;
 }
 
-
 type checkbox = "unchecked" | "some_checked" | "checked";
+
+type backupOptions = "None" | "Local" | "Azure" | "AmazonGlacier" | "AmazonS3" | "FTP";
+
+interface periodicBackupServerLimitsResponse {
+    LocalRootPath: string;
+    AllowedAwsRegions: Array<string>;
+    AllowedDestinations: Array<backupOptions>;
+}

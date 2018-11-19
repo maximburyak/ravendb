@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.Loader;
@@ -12,6 +13,7 @@ using Raven.Server.ServerWide;
 using Raven.Server.Utils;
 using Raven.Server.Utils.Cli;
 using Sparrow.Logging;
+using Sparrow.Platform;
 
 namespace Raven.Server
 {
@@ -21,6 +23,8 @@ namespace Raven.Server
 
         public static int Main(string[] args)
         {
+            UseOnlyInvariantCultureInRavenDB();
+
             SetCurrentDirectoryToServerPath();
 
             string[] configurationArgs;
@@ -61,7 +65,7 @@ namespace Raven.Server
                 File.Copy(destinationSettingsFile.FullPath, targetSettingsFile.FullPath);
             }
 
-            var configuration = new RavenConfiguration(null, ResourceType.Server, CommandLineSwitches.CustomConfigPath);
+            var configuration = RavenConfiguration.CreateForServer(null, CommandLineSwitches.CustomConfigPath);
 
             if (configurationArgs != null)
                 configuration.AddCommandLine(configurationArgs);
@@ -69,6 +73,8 @@ namespace Raven.Server
             configuration.Initialize();
 
             LoggingSource.Instance.SetupLogMode(configuration.Logs.Mode, configuration.Logs.Path.FullPath);
+            LoggingSource.UseUtcTime = configuration.Logs.UseUtcTime;
+
             if (Logger.IsInfoEnabled)
                 Logger.Info($"Logging to {configuration.Logs.Path} set to {configuration.Logs.Mode} level.");
 
@@ -107,7 +113,7 @@ namespace Raven.Server
                     Console.WriteLine("\nRestarting Server...");
                     rerun = false;
 
-                    configuration = new RavenConfiguration(null, ResourceType.Server, CommandLineSwitches.CustomConfigPath);
+                    configuration = RavenConfiguration.CreateForServer(null, CommandLineSwitches.CustomConfigPath);
 
                     if (configurationArgs != null)
                     {
@@ -208,6 +214,14 @@ namespace Raven.Server
             return 0;
         }
 
+        private static void UseOnlyInvariantCultureInRavenDB()
+        {
+            Thread.CurrentThread.CurrentCulture = CultureInfo.InvariantCulture;
+            Thread.CurrentThread.CurrentUICulture = CultureInfo.InvariantCulture;
+            CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
+            CultureInfo.DefaultThreadCurrentUICulture = CultureInfo.InvariantCulture;
+        }
+
         private static void SetCurrentDirectoryToServerPath()
         {
             try
@@ -269,8 +283,9 @@ namespace Raven.Server
 
         public static void WriteServerStatsAndWaitForEsc(RavenServer server)
         {
+            var workingSetText = PlatformDetails.RunningOnPosix == false ? "working set" : "    RSS    ";
             Console.WriteLine("Showing stats, press any key to close...");
-            Console.WriteLine("    working set     | native mem      | managed mem     | mmap size         | reqs/sec       | docs (all dbs)");
+            Console.WriteLine($"    {workingSetText}     | native mem      | managed mem     | mmap size         | reqs/sec       | docs (all dbs)");
             var i = 0;
             while (Console.KeyAvailable == false)
             {

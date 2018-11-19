@@ -1,6 +1,6 @@
 /// <reference path="../../../../typings/tsd.d.ts"/>
-
 import spatialOptions = require("models/database/index/spatialOptions");
+import jsonUtil = require("common/jsonUtil");
 
 function labelMatcher<T>(labels: Array<valueAndLabelItem<T, string>>): (arg: T) => string {
     return(arg) => labels.find(x => x.value === arg).label;
@@ -61,18 +61,23 @@ class indexFieldOptions {
 
     indexing = ko.observable<Raven.Client.Documents.Indexes.FieldIndexing>();
     effectiveIndexing = this.effectiveComputed(x => x.indexing(), labelMatcher(indexFieldOptions.Indexing));
+    defaultIndexing = this.defaultComputed(x => x.indexing(), labelMatcher(indexFieldOptions.Indexing));
 
     storage = ko.observable<Raven.Client.Documents.Indexes.FieldStorage>();
     effectiveStorage = this.effectiveComputed(x => x.storage());
+    defaultStorage = this.defaultComputed(x => x.storage());
 
     suggestions = ko.observable<boolean>();
     effectiveSuggestions = this.effectiveComputed(x => x.suggestions(), yesNoLabelProvider);
+    defaultSuggestions = this.defaultComputed(x => x.suggestions(), yesNoLabelProvider);
 
     termVector = ko.observable<Raven.Client.Documents.Indexes.FieldTermVector>();
     effectiveTermVector = this.effectiveComputed(x => x.termVector(), labelMatcher(indexFieldOptions.TermVectors));
+    defaultTermVector = this.defaultComputed(x => x.termVector(), labelMatcher(indexFieldOptions.TermVectors));
 
     fullTextSearch = ko.observable<boolean>();
     effectiveFullTextSearch = this.effectiveComputed(x => x.fullTextSearch(), yesNoLabelProvider);
+    defaultFullTextSearch = this.defaultComputed(x => x.fullTextSearch(), yesNoLabelProvider);
 
     spatial = ko.observable<spatialOptions>();
 
@@ -81,7 +86,8 @@ class indexFieldOptions {
     canProvideAnalyzer = ko.pureComputed(() => this.indexing() === "Search");
 
     validationGroup: KnockoutObservable<any>;
-
+    dirtyFlag: () => DirtyFlag;
+    
     constructor(name: string, dto: Raven.Client.Documents.Indexes.IndexFieldOptions, parentFields?: indexFieldOptions) {
         this.name(name);
         this.parent(parentFields);
@@ -115,6 +121,9 @@ class indexFieldOptions {
                 if (newValue) {
                     this.analyzer(null);
                     this.indexing("Search");
+                    
+                    // make sure advanced options are visible
+                    this.showAdvancedOptions(true);
                 } else {
                     this.analyzer(null);
                     this.indexing("Default");
@@ -140,10 +149,25 @@ class indexFieldOptions {
                 indexingChangeInProgess = false;
             }
         });
+
+        this.dirtyFlag = new ko.DirtyFlag([
+            this.name,
+            this.analyzer,
+            this.indexing,
+            this.storage,
+            this.suggestions,
+            this.termVector,
+            this.hasSpatialOptions,
+            this.spatial().dirtyFlag().isDirty
+        ], false, jsonUtil.newLineNormalizingHashFunction);       
     }
 
     private effectiveComputed<T>(extractor: (field: indexFieldOptions) => T, labelProvider?: (arg: T) => string): KnockoutComputed<string> {
         return ko.pureComputed(() => this.extractEffectiveValue(x => extractor(x), true, labelProvider));
+    }
+
+    private defaultComputed<T>(extractor: (field: indexFieldOptions) => T, labelProvider?: (arg: T) => string): KnockoutComputed<string> {
+        return ko.pureComputed(() => "Inherit (" + this.parent().extractEffectiveValue(x => extractor(x), false, labelProvider) + ")");
     }
 
     private extractEffectiveValue<T>(extractor: (field: indexFieldOptions) => T, wrapWithDefault: boolean, labelProvider?: (arg: T) => string): string {
@@ -161,7 +185,7 @@ class indexFieldOptions {
 
         const label = labelProvider ? labelProvider(value) : value;
 
-        return (index > 0 && wrapWithDefault) ? "Default" : <any>label;
+        return (index > 0 && wrapWithDefault) ? "Inherit (" + label + ")" : <any>label;
     }
 
     private initValidation() {

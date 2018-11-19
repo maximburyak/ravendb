@@ -59,7 +59,7 @@ namespace Raven.Server.Documents.Patch
             _isTest = isTest;
             _debugMode = debugMode;
 
-            if(string.IsNullOrEmpty(id) || id.EndsWith('/') || id.EndsWith('|'))
+            if (string.IsNullOrEmpty(id) || id.EndsWith('/') || id.EndsWith('|'))
             {
                 throw new ArgumentException("The id argument has invalid value: '" + id + "'", "id");
             }
@@ -131,18 +131,13 @@ namespace Raven.Server.Documents.Patch
             }
             else
             {
-                var translated = (BlittableObjectInstance)((JsValue)_run.Translate(context, originalDocument)).AsObject();
-                // here we need to use the _cloned_ version of the document, since the patch may
-                // change it
-                originalDoc = translated.Blittable;
-                originalDocument.Data = null; // prevent access to this by accident
-                documentInstance = translated;
+                documentInstance = UpdateOriginalDocument();
             }
 
             // we will to access this value, and the original document data may be changed by
             // the actions of the script, so we translate (which will create a clone) then use
             // that clone later
-            using (var scriptResult = _run.Run(context, context, "execute", new[] { documentInstance, args }))
+            using (var scriptResult = _run.Run(context, context, "execute", _id, new[] { documentInstance, args }))
             {
                 var modifiedDocument = scriptResult.TranslateToObject(_externalContext ?? context, usageMode: BlittableJsonDocumentBuilder.UsageMode.ToDisk);
 
@@ -159,6 +154,12 @@ namespace Raven.Server.Documents.Patch
                     PatchResult = result;
 
                     return 1;
+                }
+
+                if (_run.RefreshOriginalDocument)
+                {
+                    originalDocument = _database.DocumentsStorage.Get(context, _id);
+                    documentInstance = UpdateOriginalDocument();
                 }
 
                 DocumentsStorage.PutOperationResults? putResult = null;
@@ -189,6 +190,24 @@ namespace Raven.Server.Documents.Patch
 
                 PatchResult = result;
                 return 1;
+            }
+
+            BlittableObjectInstance UpdateOriginalDocument()
+            {
+                originalDoc = null;
+
+                if (originalDocument != null)
+                {
+                    var translated = (BlittableObjectInstance)((JsValue)_run.Translate(context, originalDocument)).AsObject();
+                    // here we need to use the _cloned_ version of the document, since the patch may
+                    // change it
+                    originalDoc = translated.Blittable;
+                    originalDocument.Data = null; // prevent access to this by accident
+
+                    return translated;
+                }
+
+                return null;
             }
         }
 

@@ -28,12 +28,15 @@ namespace Raven.Server.NotificationCenter
 
         private TransactionContextPool _contextPool;
 
-        private readonly TableSchema _actionsSchema = new TableSchema();
+        internal readonly TableSchema _actionsSchema = new TableSchema();
 
         static NotificationsStorage()
         {
-            Slice.From(StorageEnvironment.LabelsContext, "ByCreatedAt", ByteStringType.Immutable, out ByCreatedAt);
-            Slice.From(StorageEnvironment.LabelsContext, "ByPostponedUntil", ByteStringType.Immutable, out ByPostponedUntil);
+            using (StorageEnvironment.GetStaticContext(out var ctx))
+            {
+                Slice.From(ctx, "ByCreatedAt", ByteStringType.Immutable, out ByCreatedAt);
+                Slice.From(ctx, "ByPostponedUntil", ByteStringType.Immutable, out ByPostponedUntil);
+            }
         }
 
         public NotificationsStorage(string resourceName)
@@ -75,7 +78,7 @@ namespace Raven.Server.NotificationCenter
             Cleanup();
         }
 
-        public bool Store(Notification notification)
+        public bool Store(Notification notification, DateTime? postponeUntil = null)
         {
             if (Logger.IsInfoEnabled)
                 Logger.Info($"Saving notification '{notification.Id}'.");
@@ -86,13 +89,14 @@ namespace Raven.Server.NotificationCenter
                 // if previous notification had postponed until value pass this value to newly saved notification
                 var existing = Get(notification.Id, context, tx);
 
-                DateTime? postponeUntil = null;
+                if (postponeUntil == null)
+                {
+                    if (existing?.PostponedUntil == DateTime.MaxValue) // postponed until forever
+                        return false;
 
-                if (existing?.PostponedUntil == DateTime.MaxValue) // postponed until forever
-                    return false;
-
-                if (existing?.PostponedUntil != null && existing.PostponedUntil.Value > SystemTime.UtcNow)
-                    postponeUntil = existing.PostponedUntil;
+                    if (existing?.PostponedUntil != null && existing.PostponedUntil.Value > SystemTime.UtcNow)
+                        postponeUntil = existing.PostponedUntil;
+                }
 
                 using (var json = context.ReadObject(notification.ToJson(), "notification", BlittableJsonDocumentBuilder.UsageMode.ToDisk))
                 {
@@ -247,7 +251,7 @@ namespace Raven.Server.NotificationCenter
                 foreach (var action in ReadActionsByCreatedAtIndex(context))
                 {
                     if (action.Json.TryGetMember(nameof(Notification.Type), out object type) == false)
-                        throw new InvalidOperationException($"Could not find notification type. Notification: {action}");
+                        ThrowCouldNotFindNotificationType(action);
 
                     var typeLsv = (LazyStringValue)type;
 
@@ -350,6 +354,23 @@ namespace Raven.Server.NotificationCenter
                 if (delete)
                     Delete(id);
             }
+        }
+
+        private static void ThrowCouldNotFindNotificationType(NotificationTableValue action)
+        {
+            string notificationJson;
+
+            try
+            {
+                notificationJson = action.Json.ToString();
+            }
+            catch (Exception e)
+            {
+                notificationJson = $"invalid json - {e.Message}";
+            }
+
+            throw new InvalidOperationException(
+                $"Could not find notification type. Notification: {notificationJson}, created at: {action.CreatedAt}, postponed until: {action.PostponedUntil}");
         }
 
         public static class NotificationsSchema

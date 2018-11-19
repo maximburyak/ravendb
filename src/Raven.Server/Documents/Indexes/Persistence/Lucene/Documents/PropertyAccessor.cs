@@ -4,11 +4,12 @@ using System.Reflection;
 using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
 using Microsoft.CSharp.RuntimeBinder;
+using Raven.Server.Documents.Indexes.Static.Roslyn.Rewriters;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Lucene.Documents
 {
     public delegate object DynamicGetter(object target);
-
+    
     public class PropertyAccessor
     {
         public readonly Dictionary<string, Accessor> Properties = new Dictionary<string, Accessor>();
@@ -16,8 +17,11 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene.Documents
         public readonly List<KeyValuePair<string, Accessor>> PropertiesInOrder =
             new List<KeyValuePair<string, Accessor>>();
 
-        public static PropertyAccessor Create(Type type)
+        public static PropertyAccessor Create(Type type, object instance)
         {
+            if (instance is Dictionary<string, object> dict)
+                return DictionaryAccessor.Create(dict);
+
             return new PropertyAccessor(type);
         }
 
@@ -29,8 +33,11 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene.Documents
             throw new InvalidOperationException(string.Format("The {0} property was not found", name));
         }
 
-        private PropertyAccessor(Type type, HashSet<string> groupByFields = null)
+        protected PropertyAccessor(Type type, HashSet<CompiledIndexField> groupByFields = null)
         {
+            if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(Dictionary<,>))
+                return; // handled by DictionaryAccessor
+
             var isValueType = type.GetTypeInfo().IsValueType;
             foreach (var prop in type.GetProperties())
             {
@@ -38,8 +45,18 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene.Documents
                     ? (Accessor)CreateGetMethodForValueType(prop, type)
                     : CreateGetMethodForClass(prop, type);
 
-                if (groupByFields != null && groupByFields.Contains(prop.Name))
-                    getMethod.IsGroupByField = true;
+                if (groupByFields != null)
+                {
+                    foreach (var groupByField in groupByFields)
+                    {
+                        if (groupByField.IsMatch(prop.Name))
+                        {
+                            getMethod.GroupByField = groupByField;
+                            getMethod.IsGroupByField = true;
+                            break;
+                        }
+                    }
+                }
 
                 Properties.Add(prop.Name, getMethod);
                 PropertiesInOrder.Add(new KeyValuePair<string, Accessor>(prop.Name, getMethod));
@@ -115,10 +132,15 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene.Documents
             public abstract object GetValue(object target);
 
             public bool IsGroupByField;
+
+            public CompiledIndexField GroupByField;
         }
 
-        internal static PropertyAccessor CreateMapReduceOutputAccessor(Type type, HashSet<string> _groupByFields)
+        internal static PropertyAccessor CreateMapReduceOutputAccessor(Type type, object instance, HashSet<CompiledIndexField> _groupByFields)
         {
+            if (instance is Dictionary<string, object> dict)
+                return DictionaryAccessor.Create(dict, _groupByFields);
+
             return new PropertyAccessor(type, _groupByFields);
         }
     }

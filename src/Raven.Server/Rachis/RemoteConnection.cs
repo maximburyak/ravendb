@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Threading;
+using Raven.Server.ServerWide;
 using Sparrow;
 using Sparrow.Binary;
 using Sparrow.Collections;
@@ -25,6 +26,7 @@ namespace Raven.Server.Rachis
 
         public string Source => _src;
         public Stream Stream => _stream;
+        public string Dest => _destTag;
 
         public RemoteConnection(string src, Stream stream, long term, Action disconnect, [CallerMemberName] string caller = null)
         {
@@ -120,6 +122,7 @@ namespace Raven.Server.Rachis
                 [nameof(RequestVoteResponse.NotInTopology)] = rvr.NotInTopology,
                 [nameof(RequestVoteResponse.Term)] = rvr.Term,
                 [nameof(RequestVoteResponse.VoteGranted)] = rvr.VoteGranted,
+                [nameof(RequestVoteResponse.ClusterCommandsVersion)] = ClusterCommandsVersionManager.MyCommandsVersion,
                 [nameof(RequestVoteResponse.Message)] = rvr.Message
             });
         }
@@ -155,7 +158,8 @@ namespace Raven.Server.Rachis
                 [nameof(LogLengthNegotiationResponse.MaxIndex)] = lln.MaxIndex,
                 [nameof(LogLengthNegotiationResponse.MinIndex)] = lln.MinIndex,
                 [nameof(LogLengthNegotiationResponse.MidpointIndex)] = lln.MidpointIndex,
-                [nameof(LogLengthNegotiationResponse.MidpointTerm)] = lln.MidpointTerm
+                [nameof(LogLengthNegotiationResponse.MidpointTerm)] = lln.MidpointTerm,
+                [nameof(LogLengthNegotiationResponse.CommandsVersion)] = ClusterCommandsVersionManager.MyCommandsVersion
 
             });
         }
@@ -202,7 +206,8 @@ namespace Raven.Server.Rachis
                 [nameof(AppendEntries.Term)] = ae.Term,
                 [nameof(AppendEntries.TruncateLogBefore)] = ae.TruncateLogBefore,
                 [nameof(AppendEntries.TimeAsLeader)] = ae.TimeAsLeader,
-                [nameof(AppendEntries.SendingThread)] = Thread.CurrentThread.ManagedThreadId
+                [nameof(AppendEntries.SendingThread)] = Thread.CurrentThread.ManagedThreadId,
+                [nameof(AppendEntries.MinCommandVersion)] = ae.MinCommandVersion
             };
 
             if (ae.ForceElections)
@@ -343,8 +348,10 @@ namespace Raven.Server.Rachis
             }
             catch (IOException e)
             {
-                if(_log.IsInfoEnabled)
-                    _log.Info($"Failed to read from connection. If this error happens during state change of a node, it is expected. (source : [{_src}] -> destination : [{_destTag}])",e);
+                if (_log.IsInfoEnabled)
+                    _log.Info(
+                        $"Failed to read from connection. If this error happens during state change of a node, it is expected. (source : [{_src}] -> destination : [{_destTag}])",
+                        e);
                 throw new IOException("Failed to read " + typeof(T).Name, e);
             }
         }

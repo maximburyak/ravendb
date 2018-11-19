@@ -298,7 +298,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene.Documents
 
                 foreach (var itemToIndex in itemsToIndex)
                 {
-                    if (CanCreateFieldsForNestedArray(itemToIndex, indexing) == false)
+                    if (CanCreateFieldsForNestedArray(itemToIndex, field.Indexing) == false)
                         continue;
 
                     _multipleItemsSameFieldCount.Add(count++);
@@ -618,13 +618,14 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene.Documents
             return numericField;
         }
 
-        private static bool CanCreateFieldsForNestedArray(object value, Field.Index index)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool CanCreateFieldsForNestedArray(object value, FieldIndexing fieldIndexing)
         {
-            if (index.IsAnalyzed() == false)
-                return true;
-
-            if (value == null || value is DynamicNullObject)
-                return false;
+            if (fieldIndexing == FieldIndexing.Search)
+            {
+                if (value == null || value is DynamicNullObject)
+                    return false;
+            }
 
             return true;
         }

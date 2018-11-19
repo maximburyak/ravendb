@@ -10,7 +10,7 @@ namespace SlowTests.Issues
 {
     public class RavenDB_3484 : RavenTestBase
     {
-        private readonly TimeSpan waitForDocTimeout = TimeSpan.FromMinutes(4);
+        private readonly TimeSpan _waitForDocTimeout = TimeSpan.FromMinutes(4);
 
         [Fact]
         public void AllClientsWith_WaitForFree_StrategyShouldGetAccessToSubscription()
@@ -28,13 +28,6 @@ namespace SlowTests.Issues
                 {
                     processed[i] = new ManualResetEvent(false);
                 }
-                var userShouldnotexist = "user/shouldNotExist";
-                using (var session = store.OpenSession())
-                {
-                    session.Store(new User(),userShouldnotexist);
-                    session.SaveChanges();
-                    //session.Delete(userShouldnotexist);
-                }
 
                 for (int i = 0; i < numberOfClients; i++)
                 {
@@ -42,7 +35,8 @@ namespace SlowTests.Issues
 
                     subscriptions[clientNumber] = store.Subscriptions.GetSubscriptionWorker<User>(new SubscriptionWorkerOptions(id)
                     {
-                        Strategy = SubscriptionOpeningStrategy.WaitForFree
+                        Strategy = SubscriptionOpeningStrategy.WaitForFree,
+                        TimeToWaitBeforeConnectionRetry = TimeSpan.FromSeconds(5)
                     });
 
                     subscriptions[clientNumber].AfterAcknowledgment += x =>
@@ -51,23 +45,22 @@ namespace SlowTests.Issues
                         return Task.CompletedTask;
                     };
 
-                    subscriptions[clientNumber].Run(x =>
-                    {
-                    });
+                    subscriptions[clientNumber].Run(x => { });
 
                     Thread.Sleep(200);
                 }
 
                 for (int i = 0; i < numberOfClients; i++)
                 {
+                    var curI = i;
                     using (var s = store.OpenSession())
                     {
                         s.Store(new User());
                         s.SaveChanges();
                     }
 
-                    var index = WaitHandle.WaitAny(processed, waitForDocTimeout);
-                    
+                    var index = WaitHandle.WaitAny(processed, _waitForDocTimeout);
+
                     Assert.NotEqual(WaitHandle.WaitTimeout, index);
 
                     subscriptions[index].Dispose();
@@ -83,5 +76,7 @@ namespace SlowTests.Issues
                 }
             }
         }
+
+
     }
 }

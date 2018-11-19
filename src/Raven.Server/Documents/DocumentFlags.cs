@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Runtime.CompilerServices;
 
 namespace Raven.Server.Documents
 {
@@ -34,16 +35,25 @@ namespace Raven.Server.Documents
         ByAttachmentUpdate = 0x10,
         ResolveAttachmentsConflict = 0x20,
         FromRevision = 0x40,
-        Resolved = 0x80
+        Resolved = 0x80,
+        SkipRevisionCreation = 0x100
     }
 
     public static class EnumExtensions
     {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static bool Contain(this DocumentFlags current, DocumentFlags flag)
         {
             return (current & flag) == flag;
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static DocumentFlags Strip(this DocumentFlags current, DocumentFlags flag)
+        {
+            return current & ~flag;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static bool Contain(this NonPersistentDocumentFlags current, NonPersistentDocumentFlags flag)
         {
             return (current & flag) == flag;

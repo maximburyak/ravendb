@@ -27,11 +27,12 @@ namespace Raven.Server.Documents.Queries.Dynamic
         {
             var result = new DocumentQueryResult();
 
-            documentsContext.OpenReadTransaction();
+            if (documentsContext.Transaction == null || documentsContext.Transaction.Disposed)
+                documentsContext.OpenReadTransaction();
 
             FillCountOfResultsAndIndexEtag(result, query.Metadata, documentsContext);
 
-            if (existingResultEtag.HasValue)
+            if (query.Metadata.HasOrderByRandom == false && existingResultEtag.HasValue)
             {
                 if (result.ResultEtag == existingResultEtag)
                     return Task.FromResult(DocumentQueryResult.NotModifiedResult);
@@ -53,7 +54,7 @@ namespace Raven.Server.Documents.Queries.Dynamic
             ExecuteCollectionQuery(result, query, query.Metadata.CollectionName, documentsContext, token.Token);
 
             result.Flush();
-            
+
             return Task.CompletedTask;
         }
 
@@ -127,7 +128,7 @@ namespace Raven.Server.Documents.Queries.Dynamic
 
             // If the query has include or load, it's too difficult to check the etags for just the included collections, 
             // it's easier to just show etag for all docs isntead.
-            if (collection == Constants.Documents.Collections.AllDocumentsCollection || 
+            if (collection == Constants.Documents.Collections.AllDocumentsCollection ||
                 query.HasIncludeOrLoad)
             {
                 var numberOfDocuments = Database.DocumentsStorage.GetNumberOfDocuments(context);

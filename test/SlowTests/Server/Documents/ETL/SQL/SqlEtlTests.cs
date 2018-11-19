@@ -25,6 +25,7 @@ using Raven.Server.Documents.ETL.Providers.SQL;
 using Raven.Server.Documents.ETL.Providers.SQL.RelationalWriters;
 using Raven.Server.ServerWide.Context;
 using Raven.Tests.Core.Utils.Entities;
+using Sparrow;
 using Xunit;
 
 namespace SlowTests.Server.Documents.ETL.SQL
@@ -288,7 +289,7 @@ loadToOrders(orderData);");
                         dbCommand.CommandText = " SELECT COUNT(*) FROM Orders";
                         Assert.Equal(1, dbCommand.ExecuteScalar());
                         dbCommand.CommandText = " SELECT OrderLinesCount FROM Orders";
-                        Assert.Equal(DBNull.Value, dbCommand.ExecuteScalar());
+                        Assert.Equal(0, dbCommand.ExecuteScalar());
                     }
                 }
             }
@@ -542,6 +543,9 @@ loadToOrders(orderData);");
                 }
                 string str = string.Format("{0}/admin/logs/watch", store.Urls.First().Replace("http", "ws"));
                 StringBuilder sb = new StringBuilder();
+
+                var mre = new AsyncManualResetEvent();
+
                 await client.ConnectAsync(new Uri(str), CancellationToken.None);
                 var task = Task.Run((Func<Task>)(async () =>
                {
@@ -551,6 +555,7 @@ loadToOrders(orderData);");
                        var value = await ReadFromWebSocket(buffer, client);
                        lock (sb)
                        {
+                           mre.Set();
                            sb.AppendLine(value);
                        }
                        const string expectedValue = "skipping document: orders/1";
@@ -559,6 +564,7 @@ loadToOrders(orderData);");
 
                    }
                }));
+                await mre.WaitAsync(TimeSpan.FromSeconds(60));
                 SetupSqlEtl(store, @"output ('Tralala'); 
 
 undefined();
@@ -570,7 +576,10 @@ var nameArr = this.StepName.split('.'); loadToOrders({});");
                 {
                     var msg = "Could not process SQL Replication script for OrdersAndLines, skipping document: orders/1";
                     var tempFileName = Path.GetTempFileName();
-                    File.WriteAllText(tempFileName, sb.ToString());
+                    lock (sb)
+                    {
+                        File.WriteAllText(tempFileName, sb.ToString());
+                    }
                     throw new InvalidOperationException($"{msg}. Full log is: \r\n{tempFileName}");
                 }
             }
@@ -622,6 +631,7 @@ var nameArr = this.StepName.split('.'); loadToOrders({});");
                                 {
                                     new SqlEtlTable {TableName = "Orders", DocumentIdColumn = "Id"},
                                     new SqlEtlTable {TableName = "OrderLines", DocumentIdColumn = "OrderId"},
+                                    new SqlEtlTable {TableName = "NotUsedInScript", DocumentIdColumn = "OrderId"},
                                 },
                                 Transforms =
                                 {

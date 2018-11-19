@@ -15,6 +15,7 @@ using Raven.Client.Documents.Conventions;
 using Raven.Client.Documents.Queries;
 using Raven.Client.Documents.Session;
 using Raven.Client.Extensions;
+using Raven.Client.Util;
 
 namespace Raven.Client.Documents.Linq
 {
@@ -159,6 +160,8 @@ namespace Raven.Client.Documents.Linq
             {
                 switch (expression.NodeType)
                 {
+                    case ExpressionType.Convert:
+                    case ExpressionType.ConvertChecked:
                     case ExpressionType.Quote:
                         expression = ((UnaryExpression)expression).Operand;
                         break;
@@ -410,5 +413,17 @@ namespace Raven.Client.Documents.Linq
                 cur = cur.Expression as MemberExpression;
             }
         }
+
+        internal static string RemoveTransparentIdentifiersIfNeeded(string path)
+        {
+            while (path.StartsWith(JavascriptConversionExtensions.TransparentIdentifier))
+            {
+                var indexOf = path.IndexOf(".", StringComparison.Ordinal);
+                path = path.Substring(indexOf + 1);
+            }
+
+            return path;
+        }
     }
 }
+

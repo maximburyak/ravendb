@@ -1,9 +1,10 @@
 ﻿using System;
 using System.Linq;
 using System.Reflection;
+using Raven.Client.Extensions;
 using Raven.Client.Properties;
 
-[assembly: RavenVersion(Build = "40", CommitHash = "a377982", Version = "4.0", FullVersion = "4.0.0-custom-40")]
+[assembly: RavenVersion(Build = "40", CommitHash = "a377982", Version = "4.0", FullVersion = "4.0.10-custom-40")]
 
 namespace Raven.Client.Properties
 {
@@ -16,10 +17,34 @@ namespace Raven.Client.Properties
         public string FullVersion { get; set; }
 
         private static int? _buildVersion;
+        private static readonly Version _assemblyVersion;
+        private static string _assemblyVersionAsString;
 
-        private static RavenVersionAttribute _instance;
+        public static readonly RavenVersionAttribute Instance;
 
-        public static RavenVersionAttribute Instance => _instance ?? (_instance = (RavenVersionAttribute)typeof(RavenVersionAttribute).GetTypeInfo().Assembly.GetCustomAttributes(typeof(RavenVersionAttribute)).Single());
+        static RavenVersionAttribute()
+        {
+            _assemblyVersion = typeof(RavenVersionAttribute).GetTypeInfo().Assembly.GetName().Version;
+            Instance = (RavenVersionAttribute)typeof(RavenVersionAttribute).GetTypeInfo().Assembly.GetCustomAttributes(typeof(RavenVersionAttribute)).Single();
+        }
+
+        public RavenVersionAttribute()
+        {
+            MajorVersion = _assemblyVersion.Major;
+            MajorVersionAsChar = char.Parse(MajorVersion.ToInvariantString());
+            MinorVersion = _assemblyVersion.Minor;
+            PatchVersion = _assemblyVersion.Build;
+        }
+
+        public string AssemblyVersion => _assemblyVersionAsString ?? (_assemblyVersionAsString = $"{MajorVersion.ToInvariantString()}.{MinorVersion.ToInvariantString()}.{PatchVersion.ToInvariantString()}.{BuildVersion.ToInvariantString()}");
+
+        public readonly int MajorVersion;
+
+        internal readonly char MajorVersionAsChar;
+
+        public readonly int MinorVersion;
+
+        public readonly int PatchVersion;
 
         public int BuildVersion
         {
@@ -27,15 +52,12 @@ namespace Raven.Client.Properties
             {
                 if (_buildVersion == null)
                 {
-                    int _;
-                    if (int.TryParse(Build, out _) == false)
-                    {
-                        _buildVersion = 40;
-                    }
-                    else
-                    {
-                        _buildVersion = _;
-                    }
+                    if (string.IsNullOrWhiteSpace(Build))
+                        throw new ArgumentNullException(nameof(Build));
+
+                    _buildVersion = int.TryParse(Build, out var buildVersion)
+                        ? buildVersion
+                        : 40;
                 }
 
                 return _buildVersion.Value;

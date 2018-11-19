@@ -2,7 +2,11 @@
     <div class="row flex-row flex-grow flex-stretch-items">
         <div class="col-sm-12 col-lg-6 flex-vertical">
             <div class="flex-header flex-horizontal">
-                <button data-bind="click: addNode, enable: canAddNodes, visible: accessManager.canAddNode" class="btn btn-primary"><i class="icon-plus"></i><span>Add Node to cluster</span></button>
+                <div>
+                    <button data-bind="click: addNode, enable: canAddNodes, visible: accessManager.canAddNode" class="btn btn-primary"><i class="icon-plus"></i><span>Add Node to cluster</span></button>
+                    <button data-bind="click: bootstrapCluster, visible: canBootstrapCluster, css: { 'btn-spinner': $root.spinners.bootstrap }, disable: $root.spinners.bootstrap"
+                            class="btn btn-primary" title="Perform cluster initialization"><i class="icon-cluster"></i><span>Bootstrap cluster</span></button>    
+                </div>
                 <div class="flex-separator"></div>
                 <div class="flex-end text-muted resources" data-bind="if: utilizedCores() > 0, visible: accessManager.showCoresInfo">
                     <div class="text-center"><small>Available cores:</small></div>
@@ -119,6 +123,10 @@
                                     <span data-bind="if: installedMemoryInGb() && installedMemoryInGb() != -1">
                                         / <strong data-toggle="tooltip" title="Total memory installed on machine"><span data-bind="text: installedMemory"></span>GB</strong>
                                     </span>
+                                </div>
+                                <div class="serverVersion" data-bind="if: nodeServerVersion">
+                                    <h5><i class="icon-server"></i> &nbsp; VERSION</h5>
+                                    <strong class="text-lighter" data-toggle="tooltip" title="Server version installed on this node" data-bind="text: nodeServerVersion"></strong>
                                 </div>
                             </div> 
                         </div>

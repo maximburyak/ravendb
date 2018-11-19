@@ -5,8 +5,6 @@ using System.Security.Cryptography.X509Certificates;
 using System.Threading.Tasks;
 using FastTests.Server.Replication;
 using Raven.Client.Documents.Operations.Replication;
-using Raven.Client.ServerWide;
-using Raven.Client.ServerWide.Operations;
 using Raven.Client.ServerWide.Operations.Certificates;
 using Raven.Tests.Core.Utils.Entities;
 using Xunit;
@@ -96,10 +94,9 @@ namespace SlowTests.Server.Replication
         [Fact]
         public async Task DisableExternalReplication()
         {
-
             using (var store1 = GetDocumentStore())
             using (var store2 = GetDocumentStore())
-            {
+            {    
                 var externalList = await SetupReplicationAsync(store1, store2);
                 using (var session = store1.OpenSession())
                 {

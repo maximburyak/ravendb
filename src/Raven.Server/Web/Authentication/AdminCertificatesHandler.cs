@@ -238,6 +238,17 @@ namespace Raven.Server.Web.Authentication
 
                 try
                 {
+                    var _ = string.IsNullOrEmpty(certificate.Password)
+                        ? new X509Certificate2(certBytes, (string)null, X509KeyStorageFlags.MachineKeySet)
+                        : new X509Certificate2(certBytes, certificate.Password, X509KeyStorageFlags.MachineKeySet);
+                }
+                catch (Exception e)
+                {
+                    throw new ArgumentException("Unable to load the provided certificate.", e);
+                }
+
+                try
+                {
                     await PutCertificateCollectionInCluster(certificate, certBytes, certificate.Password, ServerStore, ctx);
                 }
                 catch (Exception e)
@@ -255,21 +266,30 @@ namespace Raven.Server.Web.Authentication
             var collection = new X509Certificate2Collection();
 
             if (string.IsNullOrEmpty(password))
-                collection.Import(certBytes);
+                collection.Import(certBytes, (string)null, X509KeyStorageFlags.MachineKeySet);
             else
-                collection.Import(certBytes, password, X509KeyStorageFlags.PersistKeySet | X509KeyStorageFlags.Exportable);
+                collection.Import(certBytes, password, X509KeyStorageFlags.PersistKeySet | X509KeyStorageFlags.Exportable | X509KeyStorageFlags.MachineKeySet);
 
             var first = true;
             var collectionPrimaryKey = string.Empty;
+
+            // we don't want to import items up the chain (signing keys)
+            var issuers = new HashSet<string>();
 
             foreach (var x509Certificate in collection)
             {
                 if (serverStore.Server.Certificate.Certificate?.Thumbprint != null && serverStore.Server.Certificate.Certificate.Thumbprint.Equals(x509Certificate.Thumbprint))
                     throw new InvalidOperationException($"You are trying to import the same server certificate ({x509Certificate.Thumbprint}) as the one which is already loaded. This is not supported.");
+
+                if (x509Certificate.Issuer != x509Certificate.Subject)
+                    issuers.Add(x509Certificate.Issuer);
             }
 
             foreach (var x509Certificate in collection)
             {
+                if (issuers.Contains(x509Certificate.Subject))
+                    continue;
+
                 var currentCertDef = new CertificateDefinition
                 {
                     Name = certDef.Name,
@@ -300,6 +320,9 @@ namespace Raven.Server.Web.Authentication
 
                     foreach (var cert in collection)
                     {
+                        if (issuers.Contains(cert.Subject))
+                            continue;
+
                         if (Constants.Certificates.Prefix + cert.Thumbprint != firstKey)
                             currentCertDef.CollectionSecondaryKeys.Add(Constants.Certificates.Prefix + cert.Thumbprint);
                     }
@@ -417,57 +440,56 @@ namespace Raven.Server.Web.Authentication
 
             using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
             {
-                var certificates = new List<(string ItemName, BlittableJsonReaderObject Value)>();
+                var certificateList = new Dictionary<string, BlittableJsonReaderObject>();
+
                 try
                 {
                     if (string.IsNullOrEmpty(thumbprint))
                     {
+                        // The server cert is not part of the local state or the cluster certificates, we add it to the list separately
+                        var serverCertKey = Constants.Certificates.Prefix + Server.Certificate.Certificate?.Thumbprint;
+                        if (Server.Certificate.Certificate != null)
+                        {
+                            var serverCertDef = new CertificateDefinition
+                            {
+                                Name = "Server Certificate",
+                                Certificate = Convert.ToBase64String(Server.Certificate.Certificate.Export(X509ContentType.Cert)),
+                                Permissions = new Dictionary<string, DatabaseAccess>(),
+                                SecurityClearance = SecurityClearance.ClusterNode,
+                                Thumbprint = Server.Certificate.Certificate.Thumbprint,
+                                NotAfter = Server.Certificate.Certificate.NotAfter
+                            };
+
+                            var serverCert = context.ReadObject(serverCertDef.ToJson(), "Server/Certificate/Definition");
+
+                            certificateList.TryAdd(serverCertKey, serverCert);
+                        }
+
+                        // If we are passive, we take the certs from the local state
                         if (ServerStore.CurrentRachisState == RachisState.Passive)
                         {
                             List<string> localCertKeys;
                             using (context.OpenReadTransaction())
                                 localCertKeys = ServerStore.Cluster.GetCertificateKeysFromLocalState(context).ToList();
-                            
-                            var serverCertKey = Constants.Certificates.Prefix + Server.Certificate.Certificate?.Thumbprint;
-                            if (Server.Certificate.Certificate != null && localCertKeys.Contains(serverCertKey) == false)
-                            {                            
-                                // Since we didn't go through EnsureNotPassive(), the server certificate is not registered yet so we'll add it to the local state.
-                                var serverCertDef = new CertificateDefinition
-                                {
-                                    Name = "Server Certificate",
-                                    Certificate = Convert.ToBase64String(Server.Certificate.Certificate.Export(X509ContentType.Cert)),
-                                    Permissions = new Dictionary<string, DatabaseAccess>(),
-                                    SecurityClearance = SecurityClearance.ClusterNode,
-                                    Thumbprint = Server.Certificate.Certificate.Thumbprint,
-                                    NotAfter = Server.Certificate.Certificate.NotAfter
-                                };
 
-                                var serverCert = context.ReadObject(serverCertDef.ToJson(), "Server/Certificate/Definition");
-                                using (var tx = context.OpenWriteTransaction())
-                                {
-                                    ServerStore.Cluster.PutLocalState(context, Constants.Certificates.Prefix + Server.Certificate.Certificate.Thumbprint, serverCert);
-                                    tx.Commit();
-                                }
-                                certificates.Add((serverCertKey, serverCert));
-                            }
-
-                            foreach (var localCertKey in localCertKeys)
+                            using (context.OpenReadTransaction())
                             {
-                                BlittableJsonReaderObject localCertificate;
-                                using (context.OpenReadTransaction())
-                                    localCertificate = ServerStore.Cluster.GetLocalState(context, localCertKey);
+                                foreach (var localCertKey in localCertKeys)
+                                {
+                                    var localCertificate = ServerStore.Cluster.GetLocalState(context, localCertKey);
+                                    if (localCertificate == null)
+                                        continue;
 
-                                if (localCertificate == null)
-                                    continue;
+                                    var def = JsonDeserializationServer.CertificateDefinition(localCertificate);
 
-                                var def = JsonDeserializationServer.CertificateDefinition(localCertificate);
-
-                                if (showSecondary || string.IsNullOrEmpty(def.CollectionPrimaryKey))
-                                    certificates.Add((localCertKey, localCertificate));
-                                else
-                                    localCertificate.Dispose();
+                                    if (showSecondary || string.IsNullOrEmpty(def.CollectionPrimaryKey))
+                                        certificateList.TryAdd(localCertKey, localCertificate);
+                                    else
+                                        localCertificate.Dispose();
+                                }
                             }
                         }
+                        // If we are not passive, we take the certs from the cluster
                         else
                         {
                             using (context.OpenReadTransaction())
@@ -477,7 +499,7 @@ namespace Raven.Server.Web.Authentication
                                     var def = JsonDeserializationServer.CertificateDefinition(item.Value);
 
                                     if (showSecondary || string.IsNullOrEmpty(def.CollectionPrimaryKey))
-                                        certificates.Add(item);
+                                        certificateList.TryAdd(item.ItemName, item.Value);
                                     else
                                         item.Value.Dispose();
                                 }
@@ -511,26 +533,30 @@ namespace Raven.Server.Web.Authentication
                                 }
                             }
 
-                            certificates.Add((key, certificate));
+                            certificateList.TryAdd(key, certificate);
                         }
                     }
+
+                    var wellKnown = ServerStore.Configuration.Security.WellKnownAdminCertificates;
 
                     using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
                     {
                         writer.WriteStartObject();
-                        writer.WriteArray(context, "Results", certificates.ToArray(), (w, c, cert) =>
+                        writer.WriteArray(context, "Results", certificateList.ToArray(), (w, c, cert) =>
                         {
                             c.Write(w, cert.Value);
                         });
                         writer.WriteComma();
                         writer.WritePropertyName("LoadedServerCert");
                         writer.WriteString(Server.Certificate.Certificate?.Thumbprint);
+                        writer.WriteComma();
+                        writer.WriteArray("WellKnownAdminCerts", wellKnown);
                         writer.WriteEndObject();
                     }
                 }
                 finally
                 {
-                    foreach (var cert in certificates)
+                    foreach (var cert in certificateList)
                         cert.Value?.Dispose();
                 }
             }
@@ -549,40 +575,49 @@ namespace Raven.Server.Web.Authentication
             }
 
             using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext ctx))
+            using (ctx.OpenReadTransaction())
             {
-
-                BlittableJsonReaderObject certificate;
-                using (ctx.OpenReadTransaction())
-                    certificate = ServerStore.Cluster.Read(ctx, Constants.Certificates.Prefix + clientCert.Thumbprint);
-                
-                if (certificate == null && clientCert.Equals(Server.Certificate.Certificate))
-                {
-                    var certKey = Constants.Certificates.Prefix + clientCert.Thumbprint;
-                    using (ctx.OpenReadTransaction())
-                        certificate = ServerStore.Cluster.Read(ctx, certKey) ??
+                var certKey = Constants.Certificates.Prefix + clientCert.Thumbprint;
+                var certificate = ServerStore.Cluster.Read(ctx, certKey) ??
                                   ServerStore.Cluster.GetLocalState(ctx, certKey);
 
-                    if (certificate == null && Server.Certificate.Certificate != null)
-                    {
-                        // Since we didn't go through EnsureNotPassive(), the server certificate is not registered yet so we'll add it to the local state.
-                        var serverCertDef = new CertificateDefinition
-                        {
-                            Name = "Server Certificate",
-                            Certificate = Convert.ToBase64String(Server.Certificate.Certificate.Export(X509ContentType.Cert)),
-                            Permissions = new Dictionary<string, DatabaseAccess>(),
-                            SecurityClearance = SecurityClearance.ClusterNode,
-                            Thumbprint = Server.Certificate.Certificate.Thumbprint,
-                            NotAfter = Server.Certificate.Certificate.NotAfter
-                        };
+                if (certificate == null)
+                {
+                    // The client certificate is not registered in the ServerStore.
+                    // Let's check if the client is using the server certificate or one of the well known admin certs.
 
-                        certificate = ctx.ReadObject(serverCertDef.ToJson(), "Server/Certificate/Definition");
-                        using (var tx = ctx.OpenWriteTransaction())
+                    var wellKnown = ServerStore.Configuration.Security.WellKnownAdminCertificates;
+
+                    if (clientCert.Equals(Server.Certificate.Certificate))
+                    {
+                        if (Server.Certificate.Certificate != null)
                         {
-                            ServerStore.Cluster.PutLocalState(ctx, Constants.Certificates.Prefix + Server.Certificate.Certificate.Thumbprint, certificate);
-                            tx.Commit();
+                            var serverCertDef = new CertificateDefinition
+                            {
+                                Name = "Server Certificate",
+                                Certificate = Convert.ToBase64String(Server.Certificate.Certificate.Export(X509ContentType.Cert)),
+                                Permissions = new Dictionary<string, DatabaseAccess>(),
+                                SecurityClearance = SecurityClearance.ClusterNode,
+                                Thumbprint = Server.Certificate.Certificate.Thumbprint,
+                                NotAfter = Server.Certificate.Certificate.NotAfter
+                            };
+
+                            certificate = ctx.ReadObject(serverCertDef.ToJson(), "Server/Certificate/Definition");
                         }
                     }
+                    else if (wellKnown != null && wellKnown.Contains(clientCert.Thumbprint, StringComparer.OrdinalIgnoreCase))
+                    {
+                        var serverCertDef = new CertificateDefinition
+                        {
+                            Name = "Well Known Admin Certificate",
+                            Permissions = new Dictionary<string, DatabaseAccess>(),
+                            SecurityClearance = SecurityClearance.ClusterAdmin,
+                            Thumbprint = clientCert.Thumbprint,
+                        };
+                        certificate = ctx.ReadObject(serverCertDef.ToJson(), "WellKnown/Certificate/Definition");
+                    }
                 }
+
                 using (var writer = new BlittableJsonTextWriter(ctx, ResponseBodyStream()))
                 {
                     writer.WriteObject(certificate);
@@ -659,11 +694,9 @@ namespace Raven.Server.Web.Authentication
             var collection = new X509Certificate2Collection();
             using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
             {
-                if (ServerStore.CurrentRachisState == RachisState.Passive)
-                {
-                    collection.Import(Server.Certificate.Certificate.Export(X509ContentType.Cert));
-                }
-                else
+                collection.Import(Server.Certificate.Certificate.Export(X509ContentType.Cert), (string)null, X509KeyStorageFlags.MachineKeySet);
+
+                if (ServerStore.CurrentRachisState != RachisState.Passive)
                 {
                     using (context.OpenReadTransaction())
                     {
@@ -674,15 +707,13 @@ namespace Raven.Server.Web.Authentication
                             var clusterNodes = allItems.Select(item => JsonDeserializationServer.CertificateDefinition(item.Value))
                                 .Where(certificateDef => certificateDef.SecurityClearance == SecurityClearance.ClusterNode)
                                 .ToList();
-
-                            if (clusterNodes.Count == 0)
-                                throw new InvalidOperationException(
-                                    "Cannot get ClusterNode certificates, there should be at least one but it doesn't exist. This shouldn't happen!");
-
+                            
                             foreach (var cert in clusterNodes)
                             {
-                                var x509Certificate2 = new X509Certificate2(Convert.FromBase64String(cert.Certificate));
-                                collection.Import(x509Certificate2.Export(X509ContentType.Cert));
+                                var x509Certificate2 = new X509Certificate2(Convert.FromBase64String(cert.Certificate), (string)null, X509KeyStorageFlags.MachineKeySet);
+
+                                if (collection.Contains(x509Certificate2) == false)
+                                    collection.Import(x509Certificate2.Export(X509ContentType.Cert), (string)null, X509KeyStorageFlags.MachineKeySet);
                             }
                         }
                         finally
@@ -775,6 +806,66 @@ namespace Raven.Server.Web.Authentication
             return Task.CompletedTask;
         }
 
+        [RavenAction("/admin/certificates/replacement/reset", "POST", AuthorizationStatus.ClusterAdmin)]
+        public Task ReplacementReset()
+        {
+            using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
+            using (var tx = context.OpenWriteTransaction())
+            {
+                ServerStore.Cluster.DeleteItem(context, CertificateReplacement.CertificateReplacementDoc);
+                tx.Commit();
+            }
+
+            return NoContent();
+        }
+
+        [RavenAction("/admin/certificates/replacement/status", "GET", AuthorizationStatus.ClusterAdmin)]
+        public Task ReplacementStatus()
+        {
+            using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
+            using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
+            {
+                BlittableJsonReaderObject certStatus;
+                using (context.OpenReadTransaction())
+                {
+                    certStatus = ServerStore.Cluster.GetItem(context, CertificateReplacement.CertificateReplacementDoc);
+                }
+
+                if (certStatus != null)
+                {
+                    certStatus.TryGet(nameof(CertificateReplacement.Confirmations), out int confirmations);
+                    certStatus.TryGet(nameof(CertificateReplacement.Thumbprint), out string thumbprint);
+                    certStatus.TryGet(nameof(CertificateReplacement.OldThumbprint), out string oldThumbprint);
+                    certStatus.TryGet(nameof(CertificateReplacement.ReplaceImmediately), out bool replaceImmediately);
+                    certStatus.TryGet(nameof(CertificateReplacement.Replaced), out int replaced);
+
+                    // Not writing the certificate itself, because it has the private key
+                    writer.WriteStartObject();
+                    writer.WritePropertyName(nameof(CertificateReplacement.Confirmations));
+                    writer.WriteInteger(confirmations);
+                    writer.WriteComma();
+                    writer.WritePropertyName(nameof(CertificateReplacement.Thumbprint));
+                    writer.WriteString(thumbprint);
+                    writer.WriteComma();
+                    writer.WritePropertyName(nameof(CertificateReplacement.OldThumbprint));
+                    writer.WriteString(oldThumbprint);
+                    writer.WriteComma();
+                    writer.WritePropertyName(nameof(CertificateReplacement.ReplaceImmediately));
+                    writer.WriteBool(replaceImmediately);
+                    writer.WriteComma();
+                    writer.WritePropertyName(nameof(CertificateReplacement.Replaced));
+                    writer.WriteInteger(replaced);
+                    writer.WriteEndObject();
+                }
+                else
+                {
+                    HttpContext.Response.StatusCode = (int)HttpStatusCode.NotFound;
+                }
+            }
+
+            return Task.CompletedTask;
+        }
+
         [RavenAction("/admin/certificates/letsencrypt/force-renew", "POST", AuthorizationStatus.ClusterAdmin)]
         public Task ForceRenew()
         {
@@ -852,6 +943,18 @@ namespace Raven.Server.Web.Authentication
 
                     if (string.IsNullOrWhiteSpace(certificate.Certificate))
                         throw new ArgumentException($"{nameof(certificate.Certificate)} is a required field in the certificate definition.");
+
+                    try
+                    {
+                        var certBytes = Convert.FromBase64String(certificate.Certificate);
+                        var _ = string.IsNullOrEmpty(certificate.Password)
+                            ? new X509Certificate2(certBytes, (string)null, X509KeyStorageFlags.MachineKeySet)
+                            : new X509Certificate2(certBytes, certificate.Password, X509KeyStorageFlags.MachineKeySet);
+                    }
+                    catch (Exception e)
+                    {
+                        throw new ArgumentException("Unable to load the provided certificate.", e);
+                    }
 
                     if (IsClusterAdmin() == false)
                         throw new InvalidOperationException("Cannot replace the server certificate. Only a ClusterAdmin can do this.");

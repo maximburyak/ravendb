@@ -14,6 +14,7 @@ namespace Voron.Debugging
     {
         public DataFileReport DataFile { get; set; }
         public List<JournalReport> Journals { get; set; }
+        public List<TempBufferReport> TempFiles { get; set; }
         public int CountOfTrees { get; set; }
         public int CountOfTables { get; set; }
     }
@@ -22,6 +23,7 @@ namespace Voron.Debugging
     {
         public DataFileReport DataFile { get; set; }
         public List<JournalReport> Journals { get; set; }
+        public List<TempBufferReport> TempBuffers { get; set; }
         public List<TreeReport> Trees { get; set; }
         public List<TableReport> Tables { get; set; }
         public PreAllocatedBuffersReport PreAllocatedBuffers { get; set; }
@@ -39,6 +41,19 @@ namespace Voron.Debugging
     {
         public long Number { get; set; }
         public long AllocatedSpaceInBytes { get; set; }
+    }
+
+    public class TempBufferReport
+    {
+        public string Name { get; set; }
+        public long AllocatedSpaceInBytes { get; set; }
+        public TempBufferType Type { get; set; }
+    }
+
+    public enum TempBufferType
+    {
+        Scratch,
+        RecyclableJournal
     }
 
     public class TreeReport

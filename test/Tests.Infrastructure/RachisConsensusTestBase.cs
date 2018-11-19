@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
@@ -11,9 +10,11 @@ using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Threading.Tasks;
 using Raven.Client.ServerWide;
+using Raven.Client.ServerWide.Tcp;
 using Raven.Client.Util;
 using Raven.Server;
 using Raven.Server.Config;
+using Raven.Server.Config.Settings;
 using Raven.Server.Rachis;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Commands;
@@ -47,10 +48,11 @@ namespace Tests.Infrastructure
             var initialCount = RachisConsensuses.Count;
             var leaderIndex = _random.Next(0, nodeCount);
             var timeout = TimeSpan.FromSeconds(10);
+            var electionTimeout = Math.Max(300, nodeCount * 60); // We want to make it easier for the tests, since we are running multiple servers on the same machine. 
             for (var i = 0; i < nodeCount; i++)
             {
                 // ReSharper disable once ExplicitCallerInfoArgument
-                SetupServer(i == leaderIndex, caller: caller);
+                SetupServer(i == leaderIndex, electionTimeout: electionTimeout, caller: caller);
             }
             var leader = RachisConsensuses[leaderIndex + initialCount];
             for (var i = 0; i < nodeCount; i++)
@@ -114,7 +116,7 @@ namespace Tests.Infrastructure
             return nodes.FirstOrDefault(x => x.CurrentState == RachisState.Leader);
         }
 
-        protected RachisConsensus<CountingStateMachine> SetupServer(bool bootstrap = false, int port = 0, [CallerMemberName] string caller = null)
+        protected RachisConsensus<CountingStateMachine> SetupServer(bool bootstrap = false, int port = 0, int electionTimeout = 300, [CallerMemberName] string caller = null)
         {
             var tcpListener = new TcpListener(IPAddress.Loopback, port);
             tcpListener.Start();
@@ -130,9 +132,10 @@ namespace Tests.Infrastructure
             var server = StorageEnvironmentOptions.CreateMemoryOnly();
 
             int seed = PredictableSeeds ? _random.Next(int.MaxValue) : _count;
-            var configuration = new RavenConfiguration(caller, ResourceType.Server);
+            var configuration = RavenConfiguration.CreateForServer(caller);
             configuration.Initialize();
             configuration.Core.RunInMemory = true;
+            configuration.Cluster.ElectionTimeout = new TimeSetting(electionTimeout, TimeUnit.Milliseconds);
             var serverStore = new RavenServer(configuration).ServerStore;
             serverStore.Initialize();
             var rachis = new RachisConsensus<CountingStateMachine>(serverStore, seed);
@@ -140,6 +143,7 @@ namespace Tests.Infrastructure
             rachis.Initialize(storageEnvironment, configuration, configuration.Core.ServerUrls[0]);
             rachis.OnDispose += (sender, args) =>
             {
+                serverStore.Dispose();
                 storageEnvironment.Dispose();
             };
             if (bootstrap)
@@ -170,22 +174,31 @@ namespace Tests.Infrastructure
                     break;
                 }
                 var stream = tcpClient.GetStream();
-                rachis.AcceptNewConnection(stream, () => tcpClient.Client.Disconnect(false), tcpClient.Client.RemoteEndPoint, hello =>
+                try
                 {
-                    lock (this)
+                    rachis.AcceptNewConnection(stream, () => tcpClient.Client.Disconnect(false), tcpClient.Client.RemoteEndPoint, hello =>
                     {
-                        if (_rejectionList.TryGetValue(rachis.Url, out var set))
-                        {
-                            if (set.Contains(hello.DebugSourceIdentifier))
-                            {
-                                throw new InvalidComObjectException("Simulated failure");
-                            }
-                        }
-                        var connections = _connections.GetOrAdd(rachis.Url, _ => new ConcurrentSet<Tuple<string, TcpClient>>());
-                        connections.Add(Tuple.Create(hello.DebugSourceIdentifier, tcpClient));
-                    }
-                });
+                        if (rachis.Url == null)
+                            return;
 
+                        lock (this)
+                        {
+                            if (_rejectionList.TryGetValue(rachis.Url, out var set))
+                            {
+                                if (set.Contains(hello.DebugSourceIdentifier))
+                                {
+                                    throw new InvalidComObjectException("Simulated failure");
+                                }
+                            }
+                            var connections = _connections.GetOrAdd(rachis.Url, _ => new ConcurrentSet<Tuple<string, TcpClient>>());
+                            connections.Add(Tuple.Create(hello.DebugSourceIdentifier, tcpClient));
+                        }
+                    });
+                }
+                catch
+                {
+                    // expected
+                }
             }
         }
 
@@ -223,33 +236,74 @@ namespace Tests.Infrastructure
             }
         }
 
-        protected async Task<long> IssueCommandsAndWaitForCommit(RachisConsensus<CountingStateMachine> leader, int numberOfCommands, string name, int value)
+        protected async Task<long> IssueCommandsAndWaitForCommit(int numberOfCommands, string name, int value)
         {
-            Assert.True(leader.CurrentState == RachisState.Leader || leader.CurrentState == RachisState.LeaderElect, "Can't append commands from non leader");
-            using (leader.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
+            for (var i = 0; i < numberOfCommands; i++)
             {
-                for (var i = 0; i < 3; i++)
+                await ActionWithLeader(l => l.PutAsync(new TestCommand
                 {
-                    await leader.PutAsync(new TestCommand { Name = name, Value = value });
-                }
-
-                using (context.OpenReadTransaction())
-                    return leader.GetLastEntryIndex(context);
+                    Name = name,
+                    Value = value
+                }));
             }
+
+            long index = -1;
+
+            await ActionWithLeader(l =>
+            {
+
+                using (l.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
+                using (context.OpenReadTransaction())
+                    index = l.GetLastEntryIndex(context);
+                return Task.CompletedTask;
+            });
+
+            return index;
         }
 
         protected List<Task> IssueCommandsWithoutWaitingForCommits(RachisConsensus<CountingStateMachine> leader, int numberOfCommands, string name, int value)
         {
-            Assert.True(leader.CurrentState == RachisState.Leader, "Can't append commands from non leader");
             List<Task> waitingList = new List<Task>();
-            using (leader.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
+            for (var i = 0; i < numberOfCommands; i++)
             {
-                for (var i = 0; i < 3; i++)
+                var task = leader.PutAsync(new TestCommand
                 {
-                    waitingList.Add(leader.PutAsync(new TestCommand { Name = name, Value = value }));
-                }
+                    Name = name,
+                    Value = value
+                });
+
+                waitingList.Add(task);
             }
             return waitingList;
+        }
+
+
+        protected async Task<Task> ActionWithLeader(Func<RachisConsensus<CountingStateMachine>, Task> action)
+        {
+            var retires = 5;
+            Exception lastException;
+            using (var cts = new CancellationTokenSource())
+            {
+                do
+                {
+                    try
+                    {
+                        var tasks = RachisConsensuses.Select(x => x.WaitForState(RachisState.Leader, cts.Token));
+                        await Task.WhenAny(tasks);
+                        var leader = RachisConsensuses.Single(x => x.CurrentState == RachisState.Leader);
+                        return action(leader);
+                    }
+                    catch (Exception e)
+                    {
+                        lastException = e;
+                    }
+                } while (retires-- > 0);
+            }
+
+            if (lastException != null)
+                throw lastException;
+
+            throw new InvalidOperationException("Should never happened!");
         }
 
         private readonly ConcurrentDictionary<string, ConcurrentSet<string>> _rejectionList = new ConcurrentDictionary<string, ConcurrentSet<string>>();
@@ -279,23 +333,39 @@ namespace Tests.Infrastructure
             }
         }
 
+        public class CountingValidator : RachisVersionValidation
+        {
+            public override void AssertPutCommandToLeader(CommandBase cmd)
+            {
+            }
+
+            public override void AssertEntryBeforeSendToFollower(BlittableJsonReaderObject entry, int version, string follower)
+            {
+            }
+        }
+
         public class CountingStateMachine : RachisStateMachine
         {
-            public long Read(TransactionOperationContext context, string name)
+            public string Read(TransactionOperationContext context, string name)
             {
                 var tree = context.Transaction.InnerTransaction.ReadTree("values");
                 var read = tree.Read(name);
-                if (read == null)
-                    return 0;
-                return read.Reader.ReadLittleEndianInt64();
+                return read?.Reader.ToStringValue();
             }
 
             protected override void Apply(TransactionOperationContext context, BlittableJsonReaderObject cmd, long index, Leader leader, ServerStore serverStore)
             {
-                Assert.True(cmd.TryGet("Name", out string name));
-                Assert.True(cmd.TryGet("Value", out int val));
+                Assert.True(cmd.TryGet(nameof(TestCommand.Name), out string name));
+                Assert.True(cmd.TryGet(nameof(TestCommand.Value), out int val));
+
                 var tree = context.Transaction.InnerTransaction.CreateTree("values");
-                tree.Increment(name, val);
+                var current = tree.Read(name)?.Reader.ToStringValue();
+                tree.Add(name, current + val);
+            }
+
+            protected override RachisVersionValidation InitializeValidator()
+            {
+                return new CountingValidator();
             }
 
             public override bool ShouldSnapshot(Slice slice, RootObjectType type)
@@ -303,7 +373,7 @@ namespace Tests.Infrastructure
                 return slice.ToString() == "values";
             }
 
-            public override async Task<(Stream Stream, Action Disconnect)> ConnectToPeer(string url, X509Certificate2 certificate)
+            public override async Task<RachisConnection> ConnectToPeer(string url, string tag, X509Certificate2 certificate)
             {
                 TimeSpan time;
                 using (ContextPoolForReadOnlyOperations.AllocateOperationContext(out TransactionOperationContext ctx))
@@ -312,7 +382,13 @@ namespace Tests.Infrastructure
                     time = _parent.ElectionTimeout * (_parent.GetTopology(ctx).AllNodes.Count - 2);
                 }
                 var tcpClient = await TcpUtils.ConnectAsync(url, time);
-                return (tcpClient.GetStream(), () => tcpClient.Client.Disconnect(false));
+                return new RachisConnection
+                {
+                    Stream = tcpClient.GetStream(),
+
+                    SupportedFeatures = new TcpConnectionHeaderMessage.SupportedFeatures(TcpConnectionHeaderMessage.NoneBaseLine),
+                    Disconnect = () => tcpClient.Client.Disconnect(false)
+                };
             }
         }
 

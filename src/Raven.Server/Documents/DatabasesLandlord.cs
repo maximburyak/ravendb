@@ -198,17 +198,17 @@ namespace Raven.Server.Documents
                     {
                         DatabaseHelper.DeleteDatabaseFiles(configuration);
                     }
+                }
 
-                    // At this point the db record still exists but the db was effectively deleted 
-                    // from this node so we can also remove its secret key from this node.
-                    if (record.Encrypted)
+                // At this point the db record still exists but the db was effectively deleted 
+                // from this node so we can also remove its secret key from this node.
+                if (record.Encrypted)
+                {
+                    using (_serverStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
+                    using (var tx = context.OpenWriteTransaction())
                     {
-                        using (_serverStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
-                        using (var tx = context.OpenWriteTransaction())
-                        {
-                            _serverStore.DeleteSecretKey(context, dbName);
-                            tx.Commit();
-                        }
+                        _serverStore.DeleteSecretKey(context, dbName);
+                        tx.Commit();
                     }
                 }
 
@@ -596,7 +596,7 @@ namespace Raven.Server.Documents
         protected RavenConfiguration CreateConfiguration(DatabaseRecord record)
         {
             Debug.Assert(_serverStore.Disposed == false);
-            var config = RavenConfiguration.CreateFrom(_serverStore.Configuration, record.DatabaseName, ResourceType.Database);
+            var config = RavenConfiguration.CreateForDatabase(_serverStore.Configuration, record.DatabaseName);
 
             foreach (var setting in record.Settings)
                 config.SetSetting(setting.Key, setting.Value);

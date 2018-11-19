@@ -44,7 +44,7 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                 var periodicBackupTaskId = result.TaskId;
 
                 var getPeriodicBackupStatus = new GetPeriodicBackupStatusOperation(periodicBackupTaskId);
-                var done = SpinWait.SpinUntil(() => store.Maintenance.Send(getPeriodicBackupStatus).Status?.LastFullBackup != null, TimeSpan.FromSeconds(60));
+                var done = SpinWait.SpinUntil(() => store.Maintenance.Send(getPeriodicBackupStatus).Status?.LastFullBackup != null, TimeSpan.FromSeconds(180));
                 Assert.True(done, "Failed to complete the backup in time");
             }
 
@@ -297,7 +297,7 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                 };
 
                 var backupTaskId = (await store.Maintenance.SendAsync(new UpdatePeriodicBackupOperation(config))).TaskId;
-                await store.Maintenance.SendAsync(new StartBackupOperation(true, backupTaskId));
+                var backupStatus = await store.Maintenance.SendAsync(new StartBackupOperation(true, backupTaskId));
                 var operation = new GetPeriodicBackupStatusOperation(backupTaskId);
                 Assert.True(SpinWait.SpinUntil(() =>
                 {
@@ -312,7 +312,14 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                     await session.SaveChangesAsync();
                 }
 
-                await store.Maintenance.SendAsync(new StartBackupOperation(false, backupTaskId));
+                StartBackupOperationResult newBackupStatus;
+                do
+                {
+                    newBackupStatus = await store.Maintenance.SendAsync(new StartBackupOperation(false, backupTaskId));
+                }
+                //Race condition between reading the backup status and creating new backup
+                while (newBackupStatus.OperationId == backupStatus.OperationId); 
+                
                 Assert.True(SpinWait.SpinUntil(() =>
                 {
                     var newLastEtag = store.Maintenance.Send(operation).Status.LastEtag;

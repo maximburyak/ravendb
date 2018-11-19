@@ -14,6 +14,7 @@ using Newtonsoft.Json.Converters;
 using Newtonsoft.Json.Serialization;
 using Raven.Client.Documents.Indexes;
 using Raven.Client.Documents.Linq;
+using Raven.Client.Documents.Operations;
 using Raven.Client.Documents.Operations.Configuration;
 using Raven.Client.Documents.Session;
 using Raven.Client.Http;
@@ -35,6 +36,7 @@ namespace Raven.Client.Documents.Conventions
         public delegate LinqPathProvider.Result CustomQueryTranslator(LinqPathProvider provider, Expression expression);
 
         public delegate bool TryConvertValueForQueryDelegate<in T>(string fieldName, T value, bool forRange, out string strValue);
+        public delegate bool TryConvertValueToObjectForQueryDelegate<in T>(string fieldName, T value, bool forRange, out object objValue);
 
         internal static readonly DocumentConventions Default = new DocumentConventions();
 
@@ -42,8 +44,10 @@ namespace Raven.Client.Documents.Conventions
 
         private readonly Dictionary<MemberInfo, CustomQueryTranslator> _customQueryTranslators = new Dictionary<MemberInfo, CustomQueryTranslator>();
 
-        private readonly List<(Type Type, TryConvertValueForQueryDelegate<object> Convert)> _listOfQueryValueConverters =
-            new List<(Type, TryConvertValueForQueryDelegate<object>)>();
+        private readonly List<(Type Type, TryConvertValueToObjectForQueryDelegate<object> Convert)> _listOfQueryValueToObjectConverters =
+            new List<(Type, TryConvertValueToObjectForQueryDelegate<object>)>();
+
+        private readonly Dictionary<Type, RangeType> _customRangeTypes = new Dictionary<Type, RangeType>();
 
         private readonly List<Tuple<Type, Func<string, object, Task<string>>>> _listOfRegisteredIdConventionsAsync =
             new List<Tuple<Type, Func<string, object, Task<string>>>>();
@@ -82,6 +86,8 @@ namespace Raven.Client.Documents.Conventions
         /// </summary>
         public DocumentConventions()
         {
+            _topologyCacheLocation = AppContext.BaseDirectory;
+
             ReadBalanceBehavior = ReadBalanceBehavior.None;
 
             FindIdentityProperty = q => q.Name == "Id";
@@ -133,6 +139,8 @@ namespace Raven.Client.Documents.Conventions
             }
 
             MaxHttpCacheSize = new Size(httpCacheSizeInMb, SizeUnit.Megabytes);
+
+            OperationStatusFetchMode = OperationStatusFetchMode.ChangesApi;
         }
 
         private bool _frozen;
@@ -149,6 +157,8 @@ namespace Raven.Client.Documents.Conventions
         private Func<string, string> _findIdentityPropertyNameFromCollectionName;
         private Func<Type, string, string, string, string> _findPropertyNameForDynamicIndex;
         private Func<Type, string, string, string, string> _findPropertyNameForIndex;
+        private Func<Type, string, string, string, string> _findProjectedPropertyNameForIndex;
+
         private Func<dynamic, string> _findCollectionNameForDynamic;
         private Func<Type, string> _findCollectionName;
         private IContractResolver _jsonContractResolver;
@@ -165,6 +175,20 @@ namespace Raven.Client.Documents.Conventions
         private bool _preserveDocumentPropertiesNotFoundOnModel;
         private Size _maxHttpCacheSize;
         private bool? _useCompression;
+        private Func<MemberInfo, string> _propertyNameConverter;
+        private Func<Type, bool> _typeIsKnownServerSide = _ => false;
+        private OperationStatusFetchMode _operationStatusFetchMode;
+        private string _topologyCacheLocation;
+
+        public Func<MemberInfo, string> PropertyNameConverter
+        {
+            get => _propertyNameConverter;
+            set
+            {
+                AssertNotFrozen();
+                _propertyNameConverter = value;
+            }
+        }
 
         public TimeSpan? RequestTimeout
         {
@@ -373,6 +397,20 @@ namespace Raven.Client.Documents.Conventions
         }
 
         /// <summary>
+        ///     Gets or sets the function to find the projected property name for index,
+        ///     given the indexed document type, the index name, the current path and the property path.
+        /// </summary>
+        public Func<Type, string, string, string, string> FindProjectedPropertyNameForIndex
+        {
+            get => _findProjectedPropertyNameForIndex;
+            set
+            {
+                AssertNotFrozen();
+                _findProjectedPropertyNameForIndex = value;
+            }
+        }
+
+        /// <summary>
         ///     Gets or sets the function to find the indexed property name
         ///     given the indexed document type, the index name, the current path and the property path.
         /// </summary>
@@ -423,6 +461,16 @@ namespace Raven.Client.Documents.Conventions
             {
                 AssertNotFrozen();
                 _transformTypeCollectionNameToDocumentIdPrefix = value;
+            }
+        }
+
+        public Func<Type, bool> TypeIsKnownServerSide
+        {
+            get => _typeIsKnownServerSide;
+            set
+            {
+                AssertNotFrozen();
+                _typeIsKnownServerSide = value;
             }
         }
 
@@ -490,6 +538,55 @@ namespace Raven.Client.Documents.Conventions
             }
         }
 
+        /// <summary>
+        /// Changes the way the Operation is fetching the operation status when waiting for completion
+        /// </summary>
+        public OperationStatusFetchMode OperationStatusFetchMode
+        {
+            get => _operationStatusFetchMode;
+            set
+            {
+                AssertNotFrozen();
+                _operationStatusFetchMode = value;
+            }
+        }
+
+        /// <summary>
+        /// Changes the location of topology cache files. By default it is set to application base directory (AppContext.BaseDirectory)
+        /// </summary>
+        public string TopologyCacheLocation
+        {
+            get => _topologyCacheLocation;
+            set
+            {
+                AssertNotFrozen();
+
+                if (string.IsNullOrWhiteSpace(value))
+                    throw new ArgumentNullException(nameof(value));
+
+                var directory = new DirectoryInfo(value);
+                if (directory.Exists == false)
+                    throw new InvalidOperationException("Topology cache location directory does not exist. Please create the directory first.");
+
+                var path = directory.FullName;
+
+                try
+                {
+                    // checking write permissions
+                    var fileName = Guid.NewGuid().ToString("N");
+                    var fullPath = Path.Combine(path, fileName);
+                    File.WriteAllText(fullPath, string.Empty);
+                    File.Delete(fullPath);
+                }
+                catch (Exception e)
+                {
+                    throw new InvalidOperationException($"You do not have write permissions to topology cache at '{path}'. Please see inner exception for more details.", e);
+                }
+
+                _topologyCacheLocation = path;
+            }
+        }
+
         public void RegisterCustomQueryTranslator<T>(Expression<Func<T, object>> member, CustomQueryTranslator translator)
         {
             AssertNotFrozen();
@@ -538,7 +635,7 @@ namespace Raven.Client.Documents.Conventions
             }
             else if (t == typeof(object))
             {
-                result = Constants.Documents.Collections.AllDocumentsCollection;
+                return null;
             }
             else
             {
@@ -691,7 +788,7 @@ namespace Raven.Client.Documents.Conventions
             return (DocumentConventions)MemberwiseClone();
         }
 
-        public static RangeType GetRangeType(Type type)
+        public RangeType GetRangeType(Type type)
         {
             var nonNullable = Nullable.GetUnderlyingType(type);
             if (nonNullable != null)
@@ -702,6 +799,11 @@ namespace Raven.Client.Documents.Conventions
 
             if (type == typeof(double) || type == typeof(float) || type == typeof(decimal))
                 return RangeType.Double;
+
+            if (_customRangeTypes.TryGetValue(type, out var rangeType))
+            {
+                return rangeType;
+            }
 
             return RangeType.None;
         }
@@ -794,35 +896,77 @@ namespace Raven.Client.Documents.Conventions
             AssertNotFrozen();
 
             int index;
-            for (index = 0; index < _listOfQueryValueConverters.Count; index++)
+            for (index = 0; index < _listOfQueryValueToObjectConverters.Count; index++)
             {
-                var entry = _listOfQueryValueConverters[index];
+                var entry = _listOfQueryValueToObjectConverters[index];
                 if (entry.Type.IsAssignableFrom(typeof(T)))
                     break;
             }
 
-            _listOfQueryValueConverters.Insert(index, (typeof(T), Actual));
+            _listOfQueryValueToObjectConverters.Insert(index, (typeof(T), Actual));
 
-            bool Actual(string name, object value, bool forRange, out string strValue)
+            bool Actual(string name, object value, bool forRange, out object strValue)
             {
-                if (value is T)
-                    return converter(name, (T)value, forRange, out strValue);
+                if (value is T t)
+                {
+                    var result = converter(name, t, forRange, out var str);
+                    strValue = str;
+                    return result;
+                }
                 strValue = null;
                 return false;
             }
         }
 
+        [Obsolete("Use TryConvertValueForQuery, staying here for backward compact")]
         public bool TryConvertValueForQuery(string fieldName, object value, bool forRange, out string strValue)
         {
-            foreach (var queryValueConverter in _listOfQueryValueConverters)
+            var result = TryConvertValueToObjectForQuery(fieldName, value, forRange, out var output);
+            strValue = output as string;
+            return result && (strValue != null || output == null);
+        }
+
+        private void RegisterQueryValueConverter<T>(TryConvertValueToObjectForQueryDelegate<T> converter)
+        {
+            AssertNotFrozen();
+
+            int index;
+            for (index = 0; index < _listOfQueryValueToObjectConverters.Count; index++)
+            {
+                var entry = _listOfQueryValueToObjectConverters[index];
+                if (entry.Type.IsAssignableFrom(typeof(T)))
+                    break;
+            }
+
+            _listOfQueryValueToObjectConverters.Insert(index, (typeof(T), Actual));
+
+            bool Actual(string name, object value, bool forRange, out object objValue)
+            {
+                if (value is T t)
+                    return converter(name, t, forRange, out objValue);
+                objValue = null;
+                return false;
+            }
+        }
+
+        public void RegisterQueryValueConverter<T>(TryConvertValueToObjectForQueryDelegate<T> converter, RangeType rangeType)
+        {
+            RegisterQueryValueConverter(converter);
+
+            _customRangeTypes[typeof(T)] = rangeType;
+        }
+
+        internal bool TryConvertValueToObjectForQuery(string fieldName, object value, bool forRange, out object objValue)
+        {
+            foreach (var queryValueConverter in _listOfQueryValueToObjectConverters)
             {
                 if (queryValueConverter.Type.IsInstanceOfType(value) == false)
                     continue;
 
-                return queryValueConverter.Convert(fieldName, value, forRange, out strValue);
+                return queryValueConverter.Convert(fieldName, value, forRange, out objValue);
             }
 
-            strValue = null;
+            objValue = null;
             return false;
         }
 

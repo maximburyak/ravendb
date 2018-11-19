@@ -2,21 +2,25 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using Sparrow.Utils;
 
 namespace Raven.TestDriver
 {
     internal class RavenServerRunner<TLocator> where TLocator : RavenServerLocator
     {
-        internal static string _emptySettingsFilePath;
+        internal static FileInfo _emptySettingsFile;
 
-        internal static string EmptySettingsFilePath
+        internal static FileInfo EmptySettingsFile
         {
             get
             {
-                if (string.IsNullOrEmpty(_emptySettingsFilePath))
-                    _emptySettingsFilePath = Path.Combine(Path.GetTempPath(), "testdriver.settings.json");
+                if (_emptySettingsFile == null)
+                {
+                    _emptySettingsFile = new FileInfo(Path.GetTempFileName());
+                    File.WriteAllText(_emptySettingsFile.FullName, "{}");
+                }
 
-                return _emptySettingsFilePath;
+                return _emptySettingsFile;
             }
         }
 
@@ -45,21 +49,20 @@ namespace Raven.TestDriver
         {
             if (File.Exists(locator.ServerPath) == false)
             {
-                throw new FileNotFoundException("Server file was not found", locator.ServerPath);
+                throw new FileNotFoundException($"Server file was not found at '{locator.ServerPath}'.", locator.ServerPath);
             }
-
-            File.WriteAllText(EmptySettingsFilePath, "{}");
 
             using (var currentProcess = Process.GetCurrentProcess())
             {
                 var commandArguments = new List<string>
                 {
                     locator.CommandArguments,
-                    $"-c {EmptySettingsFilePath}",
+                    $"-c {CommandLineArgumentEscaper.EscapeSingleArg(EmptySettingsFile.FullName)}",
                     "--ServerUrl=http://127.0.0.1:0",
                     "--RunInMemory=true",
                     "--Testing.ParentProcessId=" + currentProcess.Id,
-                    "--Setup.Mode=None"
+                    "--Setup.Mode=None",
+                    "--License.Eula.Accepted=true"
                 };
 
                 var argumentsString = string.Join(" ", commandArguments);
@@ -70,9 +73,16 @@ namespace Raven.TestDriver
                     CreateNoWindow = true,
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
+                    RedirectStandardInput = true,
                     UseShellExecute = false,
                 };
             }
+        }
+
+        internal static void CleanupTempFiles()
+        {
+            if (EmptySettingsFile.Exists)
+                EmptySettingsFile.Delete();
         }
     }
 }

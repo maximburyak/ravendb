@@ -44,6 +44,8 @@ namespace Raven.Client
 
             public const string Etag = "ETag";
 
+            public const string ClientVersion = "Raven-Client-Version";
+
             public const string IfNoneMatch = "If-None-Match";
             public const string TransferEncoding = "Transfer-Encoding";
             public const string ContentEncoding = "Content-Encoding";
@@ -151,6 +153,8 @@ namespace Raven.Client
                 public const string Expires = "@expires";
 
                 public const string HasValue = "HasValue";
+
+                public const string Etag = "@etag";
             }
 
             public class Collections

@@ -70,8 +70,9 @@ namespace Raven.Server.Utils.Cli
                         break;
                     case "%M":
                         {
+                            var workingSetText = PlatformDetails.RunningOnPosix == false ? "WS" : "RSS";
                             var memoryStats = MemoryStatsWithMemoryMappedInfo();
-                            msg.Append($"WS:{memoryStats.WorkingSet}");
+                            msg.Append($"{workingSetText}:{memoryStats.WorkingSet}");
                             msg.Append($"|UM:{memoryStats.TotalUnmanagedAllocations}");
                             msg.Append($"|M:{memoryStats.ManagedMemory}");
                             msg.Append($"|MP:{memoryStats.TotalMemoryMapped}");
@@ -127,6 +128,7 @@ namespace Raven.Server.Utils.Cli
             CreateDb,
             Logout,
             Print,
+            OpenBrowser,
 
             UnknownCommand
         }
@@ -273,6 +275,23 @@ namespace Raven.Server.Utils.Cli
             return char.ToLower(k).Equals('y');
         }
 
+        private static bool CommandOpenBrowser(List<string> args, RavenCli cli)
+        {
+            if (cli._consoleColoring == false)
+            {
+                WriteText("'openBrowser' command not supported on remote pipe connection", WarningColor, cli);
+                return true;
+            }
+
+            var url = cli._server.ServerStore.GetNodeHttpServerUrl();
+            WriteText("Openning Studio at: ", TextColor, cli, newLine: false);
+            WriteText(url, UserInputColor, cli);
+
+            BrowserHelper.OpenStudioInBrowser(url, onError: errorMessage => WriteError($"{errorMessage}", cli));
+
+            return true;
+        }
+
         private static bool CommandResetServer(List<string> args, RavenCli cli)
         {
             WriteText("", TextColor, cli);
@@ -347,7 +366,7 @@ namespace Raven.Server.Utils.Cli
             var genNum = args == null || args.Count == 0 ? 2 : Convert.ToInt32(args.First());
 
             WriteText("Before collecting, managed memory used: ", TextColor, cli, newLine: false);
-            WriteText(new Size(GC.GetTotalMemory(false), SizeUnit.Bytes).ToString(), ConsoleColor.Cyan, cli);
+            WriteText(new Size(MemoryInformation.GetManagedMemoryInBytes(), SizeUnit.Bytes).ToString(), ConsoleColor.Cyan, cli);
             var startTime = DateTime.UtcNow;
             WriteText("Garbage Collecting... ", TextColor, cli, newLine: false);
 
@@ -372,7 +391,7 @@ namespace Raven.Server.Utils.Cli
 
             WriteText("Collected.", ConsoleColor.Green, cli);
             WriteText("After collecting, managed memory used:  ", TextColor, cli, newLine: false);
-            WriteText(new Size(GC.GetTotalMemory(false), SizeUnit.Bytes).ToString(), ConsoleColor.Cyan, cli, newLine: false);
+            WriteText(new Size(MemoryInformation.GetManagedMemoryInBytes(), SizeUnit.Bytes).ToString(), ConsoleColor.Cyan, cli, newLine: false);
             WriteText(" at ", TextColor, cli, newLine: false);
             WriteText(actionTime.TotalSeconds + " Seconds", ConsoleColor.Cyan, cli);
             return true;
@@ -461,14 +480,14 @@ namespace Raven.Server.Utils.Cli
 
         public static string GetInfoText()
         {
-            var memoryInfo = MemoryInformation.GetMemoryInfo();
+            var memoryInfo = MemoryInformation.GetMemInfoUsingOneTimeSmapsReader();
             using (var currentProcess = Process.GetCurrentProcess())
             {
                 return $" Build {ServerVersion.Build}, Version {ServerVersion.Version}, SemVer {ServerVersion.FullVersion}, Commit {ServerVersion.CommitHash}" +
                        Environment.NewLine +
                        $" PID {currentProcess.Id}, {IntPtr.Size * 8} bits, {ProcessorInfo.ProcessorCount} Cores, Arch: {RuntimeInformation.OSArchitecture}" +
                        Environment.NewLine +
-                       $" {memoryInfo.TotalPhysicalMemory} Physical Memory, {memoryInfo.AvailableMemory} Available Memory" +
+                       $" {memoryInfo.TotalPhysicalMemory} Physical Memory, {memoryInfo.AvailableMemory} Available Memory, {memoryInfo.AvailableWithoutTotalCleanMemory} Calculated Available Memory" +
                        Environment.NewLine +
                        $" {RuntimeSettings.Describe()}";
             }
@@ -516,7 +535,7 @@ namespace Raven.Server.Utils.Cli
             X509Certificate2 cert;
             try
             {
-                cert = args.Count == 3 ? new X509Certificate2(path, args[2]) : new X509Certificate2(path);
+                cert = args.Count == 3 ? new X509Certificate2(path, args[2], X509KeyStorageFlags.MachineKeySet) : new X509Certificate2(path, (string)null, X509KeyStorageFlags.MachineKeySet);
             }
             catch (Exception e)
             {
@@ -607,7 +626,7 @@ namespace Raven.Server.Utils.Cli
             try
             {
                 certBytes = File.ReadAllBytes(path);
-                cert = password != null ? new X509Certificate2(certBytes, password) : new X509Certificate2(certBytes);
+                cert = password != null ? new X509Certificate2(certBytes, password, X509KeyStorageFlags.MachineKeySet) : new X509Certificate2(certBytes, (string)null, X509KeyStorageFlags.MachineKeySet);
             }
             catch (Exception e)
             {
@@ -759,7 +778,7 @@ namespace Raven.Server.Utils.Cli
             try
             {
                 certBytes = File.ReadAllBytes(path);
-                cert = new X509Certificate2(path, password, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.PersistKeySet);
+                cert = new X509Certificate2(path, password, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.PersistKeySet | X509KeyStorageFlags.MachineKeySet);
             }
             catch (Exception e)
             {
@@ -917,9 +936,10 @@ namespace Raven.Server.Utils.Cli
         {
             WriteText("Before simulating low-mem, memory stats: ", TextColor, cli, newLine: false);
 
+            var workingSetText = PlatformDetails.RunningOnPosix == false ? "Working Set" : "RSS";
             var memoryStats = MemoryStatsWithMemoryMappedInfo();
             var msg = new StringBuilder();
-            msg.Append($"Working Set: {memoryStats.WorkingSet}");
+            msg.Append($"{workingSetText}: {memoryStats.WorkingSet}");
             msg.Append($" Unmamanged Memory: {memoryStats.TotalUnmanagedAllocations}");
             msg.Append($" Managed Memory: {memoryStats.ManagedMemory}");
             WriteText(msg.ToString(), ConsoleColor.Cyan, cli);
@@ -944,24 +964,19 @@ namespace Raven.Server.Utils.Cli
             string ManagedMemory,
             string TotalMemoryMapped) MemoryStatsWithMemoryMappedInfo()
         {
-            var stats = MemoryInformation.MemoryStats();
-
             long totalMemoryMapped = 0;
             foreach (var mapping in NativeMemory.FileMapping)
             {
-                var maxMapped = 0L;
-                foreach (var singleMapping in mapping.Value)
+                foreach (var singleMapping in mapping.Value.Value.Info)
                 {
-                    maxMapped = Math.Max(maxMapped, singleMapping.Value);
+                    totalMemoryMapped += singleMapping.Value;
                 }
-
-                totalMemoryMapped += maxMapped;
             }
 
             return (
-                SizeClient.Humane(stats.WorkingSet),
-                SizeClient.Humane(stats.TotalUnmanagedAllocations),
-                SizeClient.Humane(stats.ManagedMemory),
+                SizeClient.Humane(MemoryInformation.GetWorkingSetInBytes()),
+                SizeClient.Humane(MemoryInformation.GetUnManagedAllocationsInBytes()),
+                SizeClient.Humane(MemoryInformation.GetManagedMemoryInBytes()),
                 SizeClient.Humane(totalMemoryMapped));
         }
 
@@ -1030,6 +1045,7 @@ namespace Raven.Server.Utils.Cli
                 new[] {"experimental <on|off>", "Set if to allow experimental cli commands. WARNING: Use with care!"},
                 new[] {"script <server|database> [database]", "Execute script on server or specified database. WARNING: Use with care!"},
                 new[] {"logout", "Logout (applicable only on piped connection)"},
+                new[] {"openBrowser", "Open the RavenDB Studio using the default browser"},
                 new[] {"resetServer", "Restarts the server (shutdown and re-run)"},
                 new[] {"shutdown", "Shutdown the server"},
                 new[] {"help", "This help screen"},
@@ -1093,6 +1109,7 @@ namespace Raven.Server.Utils.Cli
             [Command.Script] = new SingleAction { NumOfArgs = 1, DelegateFync = CommandScript },
             [Command.LowMem] = new SingleAction { NumOfArgs = 0, DelegateFync = CommandLowMem },
             [Command.Timer] = new SingleAction { NumOfArgs = 1, DelegateFync = CommandTimer },
+            [Command.OpenBrowser] = new SingleAction { NumOfArgs = 0, DelegateFync = CommandOpenBrowser },
             [Command.ResetServer] = new SingleAction { NumOfArgs = 0, DelegateFync = CommandResetServer },
             [Command.Logout] = new SingleAction { NumOfArgs = 0, DelegateFync = CommandLogout },
             [Command.Shutdown] = new SingleAction { NumOfArgs = 0, DelegateFync = CommandShutdown },
@@ -1380,7 +1397,6 @@ namespace Raven.Server.Utils.Cli
                     break;
             }
 
-
             return cmd;
         }
 
@@ -1424,9 +1440,12 @@ namespace Raven.Server.Utils.Cli
                 }
                 if (words.Count == 0)
                 {
-                    if (_actions[parsedLine.ParsedCommands.Last().Command].NumOfArgs > 0)
+                    var numOfArgs = _actions[parsedLine.ParsedCommands.Last().Command].NumOfArgs;
+                    if (numOfArgs > 0)
                     {
-                        parsedLine.ErrorMsg = $"Missing argument(s) after command : {parsedLine.ParsedCommands.Last().Command} (should get at least {_actions[parsedLine.ParsedCommands.Last().Command].NumOfArgs} arguments but got none)";
+                        parsedLine.ErrorMsg = $"Missing argument(s) after command : " +
+                                              $"{parsedLine.ParsedCommands.Last().Command} " +
+                                              $"(should get at least {numOfArgs} argument{(numOfArgs > 1 ? "s" : string.Empty)} but got none)";
                         return false;
                     }
                     return true;
@@ -1487,9 +1506,12 @@ namespace Raven.Server.Utils.Cli
                 parsedLine.ParsedCommands.Last().Args = args;
                 if (lastAction == null)
                 {
-                    if (args.Count < _actions[parsedLine.ParsedCommands.Last().Command].NumOfArgs)
+                    var numOfArgs = _actions[parsedLine.ParsedCommands.Last().Command].NumOfArgs;
+                    if (args.Count < numOfArgs)
                     {
-                        parsedLine.ErrorMsg = $"Missing argument(s) after command : {parsedLine.ParsedCommands.Last().Command} (should get at least {_actions[parsedLine.ParsedCommands.Last().Command].NumOfArgs} arguments but got {args.Count})";
+                        parsedLine.ErrorMsg = $"Missing argument(s) after command : " +
+                                              $"{parsedLine.ParsedCommands.Last().Command} " +
+                                              $"(should get at least {numOfArgs} argument{(numOfArgs > 1 ? "s" : string.Empty)} but got {args.Count})";
                         return false;
                     }
                     return true;

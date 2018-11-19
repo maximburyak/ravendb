@@ -117,7 +117,7 @@ namespace FastTests.Client.Indexing
         }
 
         [Fact]
-        public async Task SetLockModeAndSetPriority()
+        public async Task SetLockModeAndSetPriorityForAutoIndex()
         {
             using (var store = GetDocumentStore())
             {
@@ -129,6 +129,7 @@ namespace FastTests.Client.Indexing
                     await session.SaveChangesAsync();
                 }
 
+                // Create Auto-Index 
                 using (var session = store.OpenSession())
                 {
                     var users = session
@@ -149,12 +150,14 @@ namespace FastTests.Client.Indexing
                 Assert.Equal(IndexLockMode.Unlock, stats.LockMode);
                 Assert.Equal(IndexPriority.Normal, stats.Priority);
 
-                await store.Maintenance.SendAsync(new SetIndexesLockOperation(index.Name, IndexLockMode.LockedIgnore));
+                var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => store.Maintenance.SendAsync(new SetIndexesLockOperation(index.Name, IndexLockMode.LockedIgnore)));
+                Assert.Equal("'Indexes list contains Auto-Indexes. Lock Mode' is not set for Auto-Indexes.", exception.Message);
+                
                 await store.Maintenance.SendAsync(new SetIndexesPriorityOperation(index.Name, IndexPriority.Low));
 
                 stats = await store.Maintenance.SendAsync(new GetIndexStatisticsOperation(index.Name));
 
-                Assert.Equal(IndexLockMode.LockedIgnore, stats.LockMode);
+                Assert.Equal(IndexLockMode.Unlock, stats.LockMode);
                 Assert.Equal(IndexPriority.Low, stats.Priority);
             }
         }

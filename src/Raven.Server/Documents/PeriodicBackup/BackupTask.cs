@@ -99,7 +99,8 @@ namespace Raven.Server.Documents.PeriodicBackup
                 LastIncrementalBackupInternal = _previousBackupStatus.LastIncrementalBackupInternal,
                 IsFull = _isFullBackup,
                 LocalBackup = _previousBackupStatus.LocalBackup,
-                LastOperationId = _previousBackupStatus.LastOperationId
+                LastOperationId = _previousBackupStatus.LastOperationId,
+                FolderName = _previousBackupStatus.FolderName
             };
 
             try
@@ -213,7 +214,7 @@ namespace Raven.Server.Documents.PeriodicBackup
 
                 _database.NotificationCenter.Add(AlertRaised.Create(
                     _database.Name,
-                    "Periodic Backup",
+                    $"Periodic Backup task: '{_periodicBackup.Configuration.Name}'",
                     message,
                     AlertType.PeriodicBackup,
                     NotificationSeverity.Error,
@@ -262,6 +263,8 @@ namespace Raven.Server.Documents.PeriodicBackup
             }
             else
             {
+                Debug.Assert(_previousBackupStatus.FolderName != null);
+
                 folderName = _previousBackupStatus.FolderName;
                 backupDirectory = _backupToLocalFolder ? new PathSetting(_previousBackupStatus.LocalBackup.BackupDirectory) : _tempBackupPath;
             }
@@ -802,7 +805,7 @@ namespace Raven.Server.Documents.PeriodicBackup
 
                 _database.NotificationCenter.Add(AlertRaised.Create(
                     _database.Name,
-                    "Periodic Backup",
+                    $"Periodic Backup task: '{_periodicBackup.Configuration.Name}'",
                     message,
                     AlertType.PeriodicBackup,
                     NotificationSeverity.Error,

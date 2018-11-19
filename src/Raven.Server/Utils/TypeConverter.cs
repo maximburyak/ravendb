@@ -6,6 +6,7 @@ using System.Globalization;
 using System.Linq;
 using System.Reflection;
 using Lucene.Net.Documents;
+using Raven.Server.Documents.Indexes;
 using Raven.Server.Documents.Indexes.Persistence.Lucene.Documents;
 using Raven.Server.Documents.Indexes.Static;
 using Raven.Server.Exceptions;
@@ -178,9 +179,9 @@ namespace Raven.Server.Utils
 
                     var objectEnumerable = value as IEnumerable<object>;
                     if (objectEnumerable != null)
-                        items = objectEnumerable.Select(x => ToBlittableSupportedType(root, x, flattenArrays, recursiveLevel: recursiveLevel + 1));
+                        items = Enumerable.Select(objectEnumerable, x => ToBlittableSupportedType(root, x, flattenArrays, recursiveLevel: recursiveLevel + 1));
                     else
-                        items = enumerable.Cast<object>().Select(x => ToBlittableSupportedType(root, x, flattenArrays, recursiveLevel: recursiveLevel + 1));
+                        items = Enumerable.Select(enumerable.Cast<object>(), x => ToBlittableSupportedType(root, x, flattenArrays, recursiveLevel: recursiveLevel + 1));
 
                     return new DynamicJsonArray(flattenArrays ? Flatten(items) : items);
                 }
@@ -195,7 +196,7 @@ namespace Raven.Server.Utils
                 var propertyValueAsEnumerable = propertyValue as IEnumerable<object>;
                 if (propertyValueAsEnumerable != null && ShouldTreatAsEnumerable(propertyValue))
                 {
-                    inner[property.Key] = new DynamicJsonArray(propertyValueAsEnumerable.Select(x => ToBlittableSupportedType(root, x, flattenArrays, recursiveLevel: recursiveLevel + 1)));
+                    inner[property.Key] = new DynamicJsonArray(Enumerable.Select(propertyValueAsEnumerable, x => ToBlittableSupportedType(root, x, flattenArrays, recursiveLevel: recursiveLevel + 1)));
                     continue;
                 }
 
@@ -235,8 +236,11 @@ namespace Raven.Server.Utils
 
         public static dynamic ToDynamicType(object value)
         {
+            if (value is DynamicNullObject)
+                return value;
+
             if (value == null)
-                return DynamicNullObject.Null;
+                return DynamicNullObject.ExplicitNull;
 
             BlittableJsonReaderArray jsonArray;
             var jsonObject = value as BlittableJsonReaderObject;
@@ -405,13 +409,21 @@ namespace Raven.Server.Utils
         public static PropertyAccessor GetPropertyAccessor(object value)
         {
             var type = value.GetType();
-            return PropertyAccessorCache.GetOrAdd(type, PropertyAccessor.Create);
+
+            if (value is Dictionary<string, object>) // don't use cache when using dictionaries
+                return PropertyAccessor.Create(type, value);
+
+            return PropertyAccessorCache.GetOrAdd(type, x => PropertyAccessor.Create(type, value));
         }
 
-        public static PropertyAccessor GetPropertyAccessorForMapReduceOutput(object value, HashSet<string> groupByFields)
+        public static PropertyAccessor GetPropertyAccessorForMapReduceOutput(object value, HashSet<CompiledIndexField> groupByFields)
         {
             var type = value.GetType();
-            return PropertyAccessorCache.GetOrAdd(type, x => PropertyAccessor.CreateMapReduceOutputAccessor(x, groupByFields));
+
+            if (value is Dictionary<string, object>) // don't use cache when using dictionaries
+                return PropertyAccessor.Create(type, value);
+
+            return PropertyAccessorCache.GetOrAdd(type, x => PropertyAccessor.CreateMapReduceOutputAccessor(type, value, groupByFields));
         }
 
         public static bool ShouldTreatAsEnumerable(object item)

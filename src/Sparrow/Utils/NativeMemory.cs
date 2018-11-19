@@ -1,10 +1,12 @@
 ﻿using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
-using System.Runtime.CompilerServices;
+using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
-using Sparrow.Collections.LockFree;
 using Sparrow.LowMemory;
 using Sparrow.Platform;
 using Sparrow.Platform.Posix;
@@ -16,7 +18,7 @@ namespace Sparrow.Utils
     {
         private static float _minimumFreeCommittedMemory = 0.05f;
 
-        public static readonly ThreadLocal<ThreadStats> ThreadAllocations = new ThreadLocal<ThreadStats>(
+        private static readonly ThreadLocal<ThreadStats> ThreadAllocations = new ThreadLocal<ThreadStats>(
             () => new ThreadStats(), trackAllValues: true);
 
         public static void NotifyCurrentThreadAboutToClose()
@@ -24,7 +26,11 @@ namespace Sparrow.Utils
             ThreadAllocations.Value = null;
         }
 
-        public static ConcurrentDictionary<string, ConcurrentDictionary<IntPtr, long>> FileMapping = new ConcurrentDictionary<string, ConcurrentDictionary<IntPtr, long>>();
+        public static ThreadStats CurrentThreadStats => ThreadAllocations.Value;
+
+        public static IEnumerable<ThreadStats> AllThreadStats => ThreadAllocations.Values.Where(x => x != null);
+
+        public static ConcurrentDictionary<string, Lazy<FileMappingInfo>> FileMapping = new ConcurrentDictionary<string, Lazy<FileMappingInfo>>();
 
         public static void SetMinimumFreeCommittedMemory(float min)
         {
@@ -121,7 +127,18 @@ namespace Sparrow.Utils
         
         private static byte* ThrowFailedToAllocate(long size, ThreadStats thread, OutOfMemoryException e)
         {
-            throw new OutOfMemoryException($"Failed to allocate additional {new Size(size, SizeUnit.Bytes)} to already allocated {new Size(thread.Allocations, SizeUnit.Bytes)}", e);
+            long allocated = 0;
+            foreach (var threadAllocationsValue in AllThreadStats)
+            {
+                allocated += threadAllocationsValue.TotalAllocated;
+            }
+            var managed = MemoryInformation.GetManagedMemoryInBytes();
+            var unmanagedMemory = MemoryInformation.GetUnManagedAllocationsInBytes();
+            throw new OutOfMemoryException($"Failed to allocate additional {new Size(size, SizeUnit.Bytes)} " +
+                                           $"to already allocated {new Size(thread.TotalAllocated, SizeUnit.Bytes)} by this thread. " +
+                                           $"Total allocated by all threads: {new Size(allocated, SizeUnit.Bytes)}, " +
+                                           $"Managed memory: {new Size(managed, SizeUnit.Bytes)}, " +
+                                           $"Un-managed memory: {new Size(unmanagedMemory, SizeUnit.Bytes)}", e);
         }
 
         private static void FixupReleasesFromOtherThreads(ThreadStats thread)
@@ -134,36 +151,70 @@ namespace Sparrow.Utils
             }
         }
 
-        public static void RegisterFileMapping(string name, IntPtr start, long size)
+        public static void RegisterFileMapping(string fullPath, IntPtr start, long size, Func<long> getAllocatedSize)
         {
-            var mapping = FileMapping.GetOrAdd(name,_ => new ConcurrentDictionary<IntPtr, long>());
-            mapping.TryAdd(start, size);
+            var lazyMapping = FileMapping.GetOrAdd(fullPath, _ =>
+            {
+                return new Lazy<FileMappingInfo>(() =>
+                {
+                    var fileType = GetFileType(fullPath);
+                    return new FileMappingInfo
+                    {
+                        FileType = fileType
+                    };
+                });
+            });
+
+            lazyMapping.Value.GetAllocatedSizeFunc = getAllocatedSize;
+            lazyMapping.Value.Info.TryAdd(start, size);
+        }
+
+        private static FileType GetFileType(string fullPath)
+        {
+            var extension = Path.GetExtension(fullPath);
+            if (extension == null)
+                return FileType.Data;
+
+            if (extension.Equals(".buffers", StringComparison.OrdinalIgnoreCase) == false)
+                return FileType.Data;
+
+            var fileName = Path.GetFileName(fullPath);
+            if (fileName == null)
+                return FileType.ScratchBuffer;
+
+            if (fileName.StartsWith("scratch", StringComparison.OrdinalIgnoreCase))
+                return FileType.ScratchBuffer;
+
+            if (fileName.StartsWith("compression", StringComparison.OrdinalIgnoreCase))
+                return FileType.CompressionBuffer;
+
+            if (fileName.StartsWith("decompression", StringComparison.OrdinalIgnoreCase))
+                return FileType.DecompressionBuffer;
+
+            return FileType.Data;
         }
 
         public static void UnregisterFileMapping(string name)
         {
-            ConcurrentDictionary<IntPtr, long> value;
-            FileMapping.TryRemove(name, out value);
+            FileMapping.TryRemove(name, out _);
         }
 
         public static void UnregisterFileMapping(string name, IntPtr start, long size)
         {
-            ConcurrentDictionary<IntPtr, long> mapping;
-            if (FileMapping.TryGetValue(name, out mapping) == false)
+            if (FileMapping.TryGetValue(name, out var mapping) == false)
                 return;
 
-            long _;
-            mapping.TryRemove(start, out _);
-            if (mapping.Count == 0)
+            var info = mapping.Value.Info;
+            info.TryRemove(start, out _);
+            if (info.Count > 0)
+                return;
+
+            if (FileMapping.TryRemove(name, out var value) == false)
+                return;
+
+            if (value.Value.Info.Count > 0) // this shouldn't happen, but let us be on the safe side...
             {
-                ConcurrentDictionary<IntPtr, long> value;
-                if (FileMapping.TryRemove(name, out value))
-                {
-                    if (value.Count > 0) // this shouldn't happen, but let us be on the safe side...
-                    {
-                        FileMapping.TryAdd(name, value);
-                    }
-                }
+                FileMapping.TryAdd(name, value);
             }
         }
 
@@ -232,6 +283,28 @@ namespace Sparrow.Utils
         public static void EnsureRegistered()
         {
             GC.KeepAlive(ThreadAllocations.Value); // side affecty
+        }
+
+        public class FileMappingInfo
+        {
+            public FileMappingInfo()
+            {
+                Info = new ConcurrentDictionary<IntPtr, long>();
+            }
+
+            public ConcurrentDictionary<IntPtr, long> Info { get; set; }
+
+            public Func<long> GetAllocatedSizeFunc { get; set; }
+
+            public FileType FileType { get; set; }
+        }
+
+        public enum FileType
+        {
+            Data,
+            ScratchBuffer,
+            CompressionBuffer,
+            DecompressionBuffer
         }
     }
 }

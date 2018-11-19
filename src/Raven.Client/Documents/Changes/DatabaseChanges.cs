@@ -1,7 +1,10 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
+using System.Net.Security;
 using System.Net.WebSockets;
+using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Threading.Tasks;
 using Raven.Client.Documents.Conventions;
@@ -11,7 +14,6 @@ using Raven.Client.Extensions;
 using Raven.Client.Http;
 using Raven.Client.Util;
 using Sparrow;
-using Sparrow.Collections.LockFree;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
 using Sparrow.Utils;
@@ -36,7 +38,7 @@ namespace Raven.Client.Documents.Changes
         private TaskCompletionSource<IDatabaseChanges> _tcs;
 
         private readonly ConcurrentDictionary<int, TaskCompletionSource<object>> _confirmations = new ConcurrentDictionary<int, TaskCompletionSource<object>>();
-        
+
         private readonly AtomicDictionary<DatabaseConnectionState> _counters = new AtomicDictionary<DatabaseConnectionState>(StringComparer.OrdinalIgnoreCase);
         private int _immediateConnection;
 
@@ -45,7 +47,7 @@ namespace Raven.Client.Documents.Changes
             _requestExecutor = requestExecutor;
             _conventions = requestExecutor.Conventions;
             _database = databaseName;
-           
+
             _tcs = new TaskCompletionSource<IDatabaseChanges>(TaskCreationOptions.RunContinuationsAsynchronously);
             _cts = new CancellationTokenSource();
             _client = CreateClientWebSocket(_requestExecutor);
@@ -53,7 +55,7 @@ namespace Raven.Client.Documents.Changes
             _onDispose = onDispose;
             ConnectionStatusChanged += OnConnectionStatusChanged;
 
-            _task = DoWork();   
+            _task = DoWork();
         }
 
         public static ClientWebSocket CreateClientWebSocket(RequestExecutor requestExecutor)
@@ -61,6 +63,13 @@ namespace Raven.Client.Documents.Changes
             var clientWebSocket = new ClientWebSocket();
             if (requestExecutor.Certificate != null)
                 clientWebSocket.Options.ClientCertificates.Add(requestExecutor.Certificate);
+
+#if NETCOREAPP
+            if (RequestExecutor.HasServerCertificateCustomValidationCallback)
+            {
+                clientWebSocket.Options.RemoteCertificateValidationCallback += RequestExecutor.OnServerCertificateCustomValidationCallback;
+            }
+#endif
             return clientWebSocket;
         }
 
@@ -211,20 +220,20 @@ namespace Raven.Client.Documents.Changes
             return ForDocumentsInCollection(collectionName);
         }
 
+        [Obsolete("This method is not supported anymore. Will be removed in next major version of the product.")]
         public IChangesObservable<DocumentChange> ForDocumentsOfType(string typeName)
         {
-            if (typeName == null) throw new ArgumentNullException(nameof(typeName));
-            var encodedTypeName = Uri.EscapeDataString(typeName);
-
-            var counter = GetOrAddConnectionState("types/" + typeName, "watch-type", "unwatch-type", encodedTypeName);
+            if (typeName == null)
+                throw new ArgumentNullException(nameof(typeName));
 
             var taskedObservable = new ChangesObservable<DocumentChange, DatabaseConnectionState>(
-                counter,
-                notification => string.Equals(typeName, notification.TypeName, StringComparison.OrdinalIgnoreCase));
+                DatabaseConnectionState.Dummy,
+                notification => false);
 
             return taskedObservable;
         }
 
+        [Obsolete("This method is not supported anymore. Will be removed in next major version of the product.")]
         public IChangesObservable<DocumentChange> ForDocumentsOfType(Type type)
         {
             if (type == null)
@@ -234,6 +243,7 @@ namespace Raven.Client.Documents.Changes
             return ForDocumentsOfType(typeName);
         }
 
+        [Obsolete("This method is not supported anymore. Will be removed in next major version of the product.")]
         public IChangesObservable<DocumentChange> ForDocumentsOfType<TEntity>()
         {
             var typeName = _conventions.FindClrTypeName(typeof(TEntity));
@@ -297,7 +307,7 @@ namespace Raven.Client.Documents.Changes
             // try to reconnect
             if (newValue && Volatile.Read(ref _immediateConnection) != 0)
                 counter.Set(counter.OnConnect());
-            
+
             return counter;
         }
 
@@ -315,7 +325,7 @@ namespace Raven.Client.Documents.Changes
                     writer.WriteStartObject();
                     writer.WritePropertyName("CommandId");
                     writer.WriteInteger(currentCommandId);
-                    
+
                     writer.WriteComma();
                     writer.WritePropertyName("Command");
                     writer.WriteString(command);
@@ -323,13 +333,13 @@ namespace Raven.Client.Documents.Changes
 
                     writer.WritePropertyName("Param");
                     writer.WriteString(value);
-                  
+
                     writer.WriteEndObject();
                 }
 
                 _ms.TryGetBuffer(out var buffer);
 
-                _confirmations.Add(currentCommandId, taskCompletionSource);
+                _confirmations.TryAdd(currentCommandId, taskCompletionSource);
                 
                 await _client.SendAsync(buffer, WebSocketMessageType.Text, endOfMessage: true, cancellationToken: _cts.Token).ConfigureAwait(false);
             }
@@ -354,17 +364,14 @@ namespace Raven.Client.Documents.Changes
             catch (OperationCanceledException e)
             {
                 NotifyAboutError(e);
-                return;
-            }
-            catch (ChangeProcessingException e)
-            {
-                NotifyAboutError(e);
+                _tcs.TrySetCanceled();
                 return;
             }
             catch (Exception e)
             {
                 ConnectionStatusChanged?.Invoke(this, EventArgs.Empty);
                 NotifyAboutError(e);
+                _tcs.TrySetException(e);
                 return;
             }
 
@@ -415,7 +422,7 @@ namespace Raven.Client.Documents.Changes
                     catch
                     {
                         // we couldn't reconnect
-                        NotifyAboutError(e); 
+                        NotifyAboutError(e);
                         throw;
                     }
                 }
@@ -499,13 +506,13 @@ namespace Raven.Client.Documents.Changes
                                         json.TryGet("Exception", out string exceptionAsString);
                                         NotifyAboutError(new Exception(exceptionAsString));
                                         break;
-                                     case "Confirm":
-                                         if (json.TryGet("CommandId", out int commandId) &&
-                                             _confirmations.TryRemove(commandId, out var tcs))
-                                         {
-                                             tcs.TrySetResult(null);
-                                         }
-                                         break;
+                                    case "Confirm":
+                                        if (json.TryGet("CommandId", out int commandId) &&
+                                            _confirmations.TryRemove(commandId, out var tcs))
+                                        {
+                                            tcs.TrySetResult(null);
+                                        }
+                                        break;
                                     default:
                                         json.TryGet("Value", out BlittableJsonReaderObject value);
                                         NotifySubscribers(type, value, _counters.ValuesSnapshot);

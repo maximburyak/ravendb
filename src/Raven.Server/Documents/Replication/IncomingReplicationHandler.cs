@@ -14,10 +14,15 @@ using Sparrow.Json.Parsing;
 using System.Linq;
 using System.Net;
 using System.Threading.Tasks;
+using Raven.Client.Documents.Operations.Attachments;
 using Raven.Client.Documents.Replication;
 using Raven.Client.Documents.Replication.Messages;
+using Raven.Client.ServerWide.Tcp;
 using Raven.Client.Util;
 using Raven.Server.Documents.TcpHandlers;
+using Raven.Server.Exceptions;
+using Raven.Server.Extensions;
+using Raven.Server.NotificationCenter.Notifications;
 using Raven.Server.Utils;
 using Sparrow.Utils;
 using Voron;
@@ -37,7 +42,6 @@ namespace Raven.Server.Documents.Replication
         public event Action<IncomingReplicationHandler> DocumentsReceived;
         public event Action<LiveReplicationPulsesCollector.ReplicationPulse> HandleReplicationPulse;
 
-        public long LastDocumentEtag;
         public long LastHeartbeatTicks;
 
         private readonly ConcurrentQueue<IncomingReplicationStatsAggregator> _lastReplicationStats = new ConcurrentQueue<IncomingReplicationStatsAggregator>();
@@ -46,7 +50,7 @@ namespace Raven.Server.Documents.Replication
 
         public IncomingReplicationHandler(TcpConnectionOptions options,
             ReplicationLatestEtagRequest replicatedLastEtag,
-            ReplicationLoader parent, 
+            ReplicationLoader parent,
             JsonOperationContext.ManagedPinnedBuffer bufferToCopy)
         {
             _connectionOptions = options;
@@ -55,12 +59,13 @@ namespace Raven.Server.Documents.Replication
             _database = options.DocumentDatabase;
             _tcpClient = options.TcpClient;
             _stream = options.Stream;
+            SupportedFeatures = TcpConnectionHeaderMessage.GetSupportedFeaturesFor(TcpConnectionHeaderMessage.OperationTypes.Replication, options.ProtocolVersion);
             ConnectionInfo.RemoteIp = ((IPEndPoint)_tcpClient.Client.RemoteEndPoint).Address.ToString();
             _parent = parent;
 
             _log = LoggingSource.Instance.GetLogger<IncomingReplicationHandler>(_database.Name);
             _cts = CancellationTokenSource.CreateLinkedTokenSource(_database.DatabaseShutdown);
-            
+
             _conflictManager = new ConflictManager(_database, _parent.ConflictResolver);
 
             _attachmentStreamsTempFile = _database.DocumentsStorage.AttachmentsStorage.GetTempFile("replication");
@@ -102,11 +107,11 @@ namespace Raven.Server.Documents.Replication
                     }
                     catch (Exception e)
                     {
-                    if (_log.IsInfoEnabled)
-                        _log.Info($"Error in accepting replication request ({FromToString})", e);
+                        if (_log.IsInfoEnabled)
+                            _log.Info($"Error in accepting replication request ({FromToString})", e);
                     }
-                }, null, IncomingReplicationThreadName);                
-            }            
+                }, null, IncomingReplicationThreadName);
+            }
 
             if (_log.IsInfoEnabled)
                 _log.Info($"Incoming replication thread started ({FromToString})");
@@ -144,14 +149,14 @@ namespace Raven.Server.Documents.Replication
 
                             using (var msg = interruptibleRead.ParseToMemory(
                                 _replicationFromAnotherSource,
-                                "IncomingReplication/read-message",
+                                "IncomingReplicationStr/read-message",
                                 Timeout.Infinite,
                                 _copiedBuffer.Buffer,
                                 _database.DatabaseShutdown))
                             {
                                 if (msg.Document != null)
                                 {
-                                    _parent.EnsureNotDeleted(_parent._server.NodeTag); 
+                                    _parent.EnsureNotDeleted(_parent._server.NodeTag);
 
                                     using (var writer = new BlittableJsonTextWriter(msg.Context, _stream))
                                     {
@@ -185,8 +190,8 @@ namespace Raven.Server.Documents.Replication
 
                             if (_log.IsInfoEnabled)
                             {
-                                if (e is AggregateException ae && 
-                                    ae.InnerExceptions.Count == 1 && 
+                                if (e is AggregateException ae &&
+                                    ae.InnerExceptions.Count == 1 &&
                                     ae.InnerException is SocketException ase)
                                 {
                                     HandleSocketException(ase);
@@ -206,7 +211,7 @@ namespace Raven.Server.Documents.Replication
 
                             throw;
                         }
-                        
+
                         void HandleSocketException(SocketException e)
                         {
                             if (_log.IsInfoEnabled)
@@ -247,7 +252,7 @@ namespace Raven.Server.Documents.Replication
                 if (!message.TryGet(nameof(ReplicationMessageHeader.LastDocumentEtag), out _lastDocumentEtag))
                     throw new InvalidOperationException("Expected LastDocumentEtag property in the replication message, " +
                                                         "but didn't find it..");
-                
+
                 switch (messageType)
                 {
                     case ReplicationMessageType.Documents:
@@ -285,7 +290,7 @@ namespace Raven.Server.Documents.Replication
                         if (message.TryGet(nameof(ReplicationMessageHeader.DatabaseChangeVector), out string changeVector))
                         {
                             // saving the change vector and the last received document etag
-                            long lastEtag ;
+                            long lastEtag;
                             string lastChangeVector;
                             using (documentsContext.OpenReadTransaction())
                             {
@@ -301,7 +306,7 @@ namespace Raven.Server.Documents.Replication
                                         $"Try to update the current database change vector ({lastChangeVector}) with {changeVector} in status {status}" +
                                         $"with etag: {_lastDocumentEtag} (new) > {lastEtag} (old)");
                                 }
-                                
+
                                 var cmd = new MergedUpdateDatabaseChangeVectorCommand(changeVector, _lastDocumentEtag, ConnectionInfo.SourceDatabaseId, _replicationFromAnotherSource);
                                 if (_prevChangeVectorUpdate != null && _prevChangeVectorUpdate.IsCompleted == false)
                                 {
@@ -322,7 +327,7 @@ namespace Raven.Server.Documents.Replication
                     default:
                         throw new ArgumentOutOfRangeException("Unknown message type: " + messageType);
                 }
-                SendHeartbeatStatusToSource(documentsContext, writer, _lastDocumentEtag,  messageType);
+                SendHeartbeatStatusToSource(documentsContext, writer, _lastDocumentEtag, messageType);
             }
             catch (ObjectDisposedException)
             {
@@ -341,11 +346,29 @@ namespace Raven.Server.Documents.Replication
                 if (_cts.IsCancellationRequested)
                     return;
 
+                DynamicJsonValue returnValue;
+
+                if (e.ExtractSingleInnerException() is MissingAttachmentException mae)
+                {
+                    returnValue = new DynamicJsonValue
+                    {
+                        [nameof(ReplicationMessageReply.Type)] = ReplicationMessageReply.ReplyType.MissingAttachments.ToString(),
+                        [nameof(ReplicationMessageReply.MessageType)] = messageType,
+                        [nameof(ReplicationMessageReply.LastEtagAccepted)] = -1,
+                        [nameof(ReplicationMessageReply.Exception)] = mae.ToString()
+                    };
+
+                    documentsContext.Write(writer, returnValue);
+                    writer.Flush();
+
+                    return;
+                }
+
                 if (_log.IsInfoEnabled)
                     _log.Info($"Failed replicating documents {FromToString}.", e);
 
                 //return negative ack
-                var returnValue = new DynamicJsonValue
+                returnValue = new DynamicJsonValue
                 {
                     [nameof(ReplicationMessageReply.Type)] = ReplicationMessageReply.ReplyType.Error.ToString(),
                     [nameof(ReplicationMessageReply.MessageType)] = messageType,
@@ -525,7 +548,17 @@ namespace Raven.Server.Documents.Replication
             catch (Exception e)
             {
                 if (_log.IsInfoEnabled)
-                    _log.Info("Failed to receive documents replication batch. This is not supposed to happen, and is likely a bug.", e);
+                {
+                    //This is the case where we had a missing attachment, it is rare but expected.
+                    if (e.ExtractSingleInnerException() is MissingAttachmentException mae)
+                    {
+                        _log.Info("Replication batch contained missing attachments will request the batch to be re-sent with those attachments.", mae);
+                    }
+                    else
+                    {
+                        _log.Info("Failed to receive documents replication batch. This is not supposed to happen, and is likely a bug.", e);
+                    }
+                }
                 throw;
             }
             finally
@@ -541,7 +574,7 @@ namespace Raven.Server.Documents.Replication
                     // in a bad state and likely in the process of shutting 
                     // down
                 }
-                if(writeBuffer.SizeInBytes > _initialReplicationBuffer)
+                if (writeBuffer.SizeInBytes > _initialReplicationBuffer)
                 {
                     if (_log.IsInfoEnabled)
                     {
@@ -597,9 +630,9 @@ namespace Raven.Server.Documents.Replication
 
         public string FromToString => $"In database {_database.ServerStore.NodeTag}-{_database.Name} @ {_database.ServerStore.GetNodeTcpServerUrl()} " +
                                       $"from {ConnectionInfo.SourceTag}-{ConnectionInfo.SourceDatabaseName} @ {ConnectionInfo.SourceUrl}";
-        
+
         public IncomingConnectionInfo ConnectionInfo { get; }
-        
+
         private readonly List<ReplicationItem> _replicatedItems = new List<ReplicationItem>();
         private readonly StreamsTempFile _attachmentStreamsTempFile;
         private readonly Dictionary<Slice, ReplicationAttachmentStream> _replicatedAttachmentStreams = new Dictionary<Slice, ReplicationAttachmentStream>(SliceComparer.Instance);
@@ -607,7 +640,8 @@ namespace Raven.Server.Documents.Replication
         private readonly TcpConnectionOptions _connectionOptions;
         private readonly ConflictManager _conflictManager;
         private IDisposable _connectionOptionsDisposable;
-        private (IDisposable ReleaseBuffer, JsonOperationContext.ManagedPinnedBuffer Buffer) _copiedBuffer;
+        private readonly (IDisposable ReleaseBuffer, JsonOperationContext.ManagedPinnedBuffer Buffer) _copiedBuffer;
+        public TcpConnectionHeaderMessage.SupportedFeatures SupportedFeatures { get; set; }
 
         private struct ReplicationItem : IDisposable
         {
@@ -735,7 +769,7 @@ namespace Raven.Server.Documents.Replication
                     using (tombstoneRead.Start())
                     {
                         item.LastModifiedTicks = *(long*)ReadExactly(sizeof(long));
-                        
+
                         var keySize = *(int*)ReadExactly(sizeof(int));
                         item.KeyDispose = Slice.From(context.Allocator, ReadExactly(keySize), keySize, out item.Key);
 
@@ -879,7 +913,7 @@ namespace Raven.Server.Documents.Replication
                     }
                     catch (ThreadStateException)
                     {
-                        // expected if the thread hsan't been started yet
+                        // expected if the thread hasn't been started yet
                     }
                 }
 
@@ -887,7 +921,7 @@ namespace Raven.Server.Documents.Replication
                 _cts.Dispose();
 
                 _attachmentStreamsTempFile.Dispose();
-            
+
             }
             finally
             {
@@ -900,7 +934,7 @@ namespace Raven.Server.Documents.Replication
                     // can't do anything about it...
                 }
             }
-            
+
         }
 
         protected void OnFailed(Exception exception, IncomingReplicationHandler instance) => Failed?.Invoke(instance, exception);
@@ -984,7 +1018,7 @@ namespace Raven.Server.Documents.Replication
                     var database = _incoming._database;
 
                     var currentDatabaseChangeVector = context.LastDatabaseChangeVector ??
-                               (context.LastDatabaseChangeVector = DocumentsStorage.GetDatabaseChangeVector(context));
+                                                      (context.LastDatabaseChangeVector = DocumentsStorage.GetDatabaseChangeVector(context));
 
                     var maxReceivedChangeVectorByDatabase = currentDatabaseChangeVector;
 
@@ -1007,14 +1041,16 @@ namespace Raven.Server.Documents.Replication
 
                                 if (_incoming._replicatedAttachmentStreams.TryGetValue(item.Base64Hash, out ReplicationAttachmentStream attachmentStream))
                                 {
-                                    database.DocumentsStorage.AttachmentsStorage.PutAttachmentStream(context, item.Key, attachmentStream.Base64Hash, attachmentStream.Stream);
+                                    database.DocumentsStorage.AttachmentsStorage.PutAttachmentStream(context, item.Key, attachmentStream.Base64Hash,
+                                        attachmentStream.Stream);
                                     _disposables.Add(attachmentStream);
                                     _incoming._replicatedAttachmentStreams.Remove(item.Base64Hash);
                                 }
                             }
                             else if (item.Type == ReplicationBatchItem.ReplicationItemType.AttachmentTombstone)
                             {
-                                database.DocumentsStorage.AttachmentsStorage.DeleteAttachmentDirect(context, item.Key, false, "$fromReplication", null, rcvdChangeVector, item.LastModifiedTicks);
+                                database.DocumentsStorage.AttachmentsStorage.DeleteAttachmentDirect(context, item.Key, false, "$fromReplication", null, rcvdChangeVector,
+                                    item.LastModifiedTicks);
                             }
                             else if (item.Type == ReplicationBatchItem.ReplicationItemType.RevisionTombstone)
                             {
@@ -1037,35 +1073,51 @@ namespace Raven.Server.Documents.Replication
                                         //the other side will receive negative ack and will retry sending again.
                                         document = new BlittableJsonReaderObject(_buffer + item.Position, item.DocumentSize, context);
                                         document.BlittableValidation();
+
+                                        try
+                                        {
+                                            AssertAttachmentsFromReplication(context, item.Id, document);
+                                        }
+                                        catch (MissingAttachmentException)
+                                        {
+                                            if (_incoming.SupportedFeatures.Replication.MissingAttachments)
+                                            {
+                                                throw;
+                                            }
+
+                                            _incoming._database.NotificationCenter.Add(AlertRaised.Create(
+                                                _incoming._database.Name,
+                                                IncomingReplicationStr,
+                                                $"Detected missing attachments for document {item.Id} with the following hashes:" +
+                                                $" ({string.Join(',', GetAttachmentsHashesFromDocumentMetadata(document))}).",
+                                                AlertType.ReplicationMissingAttachments,
+                                                NotificationSeverity.Warning));
+                                        }
                                     }
 
-                                    if ((item.Flags & DocumentFlags.Revision) == DocumentFlags.Revision)
+                                    if (item.Flags.Contain(DocumentFlags.Revision))
                                     {
-                                        if (database.DocumentsStorage.RevisionsStorage.Configuration == null
-                                            && item.Flags.Contain(DocumentFlags.Resolved) == false
-                                            && item.Flags.Contain(DocumentFlags.Conflicted) == false)
-                                        {
-                                            if (_incoming._log.IsOperationsEnabled)
-                                                _incoming._log.Operations("Revisions are disabled but the node got a revision from replication.");
-                                            continue;
-                                        }
-                                        database.DocumentsStorage.RevisionsStorage.Put(context, item.Id, document, item.Flags,
-                                            NonPersistentDocumentFlags.FromReplication, rcvdChangeVector, item.LastModifiedTicks);
+                                        database.DocumentsStorage.RevisionsStorage.Put(
+                                            context,
+                                            item.Id,
+                                            document,
+                                            item.Flags,
+                                            NonPersistentDocumentFlags.FromReplication,
+                                            rcvdChangeVector,
+                                            item.LastModifiedTicks);
                                         continue;
                                     }
 
-                                    if ((item.Flags & DocumentFlags.DeleteRevision) == DocumentFlags.DeleteRevision)
+                                    if (item.Flags.Contain(DocumentFlags.DeleteRevision))
                                     {
-                                        if (database.DocumentsStorage.RevisionsStorage.Configuration == null 
-                                            && item.Flags.Contain(DocumentFlags.Resolved) == false
-                                            && item.Flags.Contain(DocumentFlags.Conflicted) == false)
-                                        {
-                                            if (_incoming._log.IsOperationsEnabled)
-                                                _incoming._log.Operations("Revisions are disabled but the node got a delete revision from replication.");
-                                            continue;
-                                        }
-                                        database.DocumentsStorage.RevisionsStorage.Delete(context, item.Id, document, 
-                                            item.Flags, NonPersistentDocumentFlags.FromReplication, rcvdChangeVector, item.LastModifiedTicks);
+                                        database.DocumentsStorage.RevisionsStorage.Delete(
+                                            context,
+                                            item.Id,
+                                            document,
+                                            item.Flags,
+                                            NonPersistentDocumentFlags.FromReplication,
+                                            rcvdChangeVector,
+                                            item.LastModifiedTicks);
                                         continue;
                                     }
 
@@ -1094,14 +1146,17 @@ namespace Raven.Server.Documents.Replication
                                                         NonPersistentDocumentFlags.FromReplication);
                                                 }
                                             }
+
                                             break;
                                         case ConflictStatus.Conflict:
                                             if (_incoming._log.IsInfoEnabled)
-                                                _incoming._log.Info($"Conflict check resolved to Conflict operation, resolving conflict for doc = {item.Id}, with change vector = {item.ChangeVector}");
+                                                _incoming._log.Info(
+                                                    $"Conflict check resolved to Conflict operation, resolving conflict for doc = {item.Id}, with change vector = {item.ChangeVector}");
                                             // if the conflict is going to ber resolved locally, that means that we have local work to do
                                             // that we need to distribute to our siblings
                                             IsIncomingReplication = false;
-                                            _incoming._conflictManager.HandleConflictForDocument(context, item.Id, item.Collection, item.LastModifiedTicks, document, rcvdChangeVector, conflictingVector, item.Flags);
+                                            _incoming._conflictManager.HandleConflictForDocument(context, item.Id, item.Collection, item.LastModifiedTicks, document,
+                                                rcvdChangeVector, conflictingVector, item.Flags);
                                             break;
                                         case ConflictStatus.AlreadyMerged:
                                             //nothing to do
@@ -1119,8 +1174,6 @@ namespace Raven.Server.Documents.Replication
                         }
                     }
 
-                    _incoming._attachmentStreamsTempFile.Reset();
-
                     Debug.Assert(_incoming._replicatedAttachmentStreams.Count == 0, "We should handle all attachment streams during WriteAttachment.");
                     Debug.Assert(context.LastDatabaseChangeVector != null);
 
@@ -1135,7 +1188,38 @@ namespace Raven.Server.Documents.Replication
                 }
                 finally
                 {
+                    _incoming._attachmentStreamsTempFile?.Reset();
                     IsIncomingReplication = false;
+                }
+            }
+
+            private const string IncomingReplicationStr = "Incoming Replication";
+
+            private void AssertAttachmentsFromReplication(DocumentsOperationContext context, string id, BlittableJsonReaderObject document)
+            {
+                foreach (LazyStringValue hash in GetAttachmentsHashesFromDocumentMetadata(document))
+                {
+                    if (_incoming._database.DocumentsStorage.AttachmentsStorage.AttachmentExists(context, hash) == false)
+                    {
+                        var msg = $"Document '{id}' has attachment '{hash?.ToString() ?? "unknown"}' " +
+                                  "listed as one of his attachments but it doesn't exist in the attachment storage";
+                        throw new MissingAttachmentException(msg);
+                    }
+                }
+            }
+
+            private IEnumerable<LazyStringValue> GetAttachmentsHashesFromDocumentMetadata(BlittableJsonReaderObject document)
+            {
+                if (document.TryGet(Raven.Client.Constants.Documents.Metadata.Key, out BlittableJsonReaderObject metadata) &&
+                    metadata.TryGet(Raven.Client.Constants.Documents.Metadata.Attachments, out BlittableJsonReaderArray attachments))
+                {
+                    foreach (BlittableJsonReaderObject attachment in attachments)
+                    {
+                        if (attachment.TryGet(nameof(AttachmentName.Hash), out LazyStringValue hash))
+                        {
+                            yield return hash;
+                        }
+                    }
                 }
             }
 

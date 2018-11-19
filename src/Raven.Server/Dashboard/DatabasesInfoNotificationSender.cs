@@ -18,6 +18,8 @@ using Raven.Server.Utils;
 using Sparrow;
 using Sparrow.Collections;
 using Sparrow.Json;
+using Sparrow.Platform;
+using Sparrow.Utils;
 
 namespace Raven.Server.Dashboard
 {
@@ -134,12 +136,16 @@ namespace Raven.Server.Dashboard
                             databasesInfo.Items.Add(databaseInfoItem);
                         }
 
+                        var writesPerSecond = (int)database.Metrics.Docs.PutsPerSec.OneSecondRate +
+                                              (int)database.Metrics.Attachments.PutsPerSec.OneSecondRate;
+                        var writeBytesPerSecond = database.Metrics.Docs.BytesPutsPerSec.OneSecondRate +
+                                                  database.Metrics.Attachments.BytesPutsPerSec.OneSecondRate;
                         var trafficWatchItem = new TrafficWatchItem
                         {
                             Database = databaseName,
                             RequestsPerSecond = (int)database.Metrics.Requests.RequestsPerSec.OneSecondRate,
-                            WritesPerSecond = (int)database.Metrics.Docs.PutsPerSec.OneSecondRate,
-                            WriteBytesPerSecond = database.Metrics.Docs.BytesPutsPerSec.OneSecondRate
+                            WritesPerSecond = writesPerSecond,
+                            WriteBytesPerSecond = writeBytesPerSecond
                         };
                         trafficWatch.Items.Add(trafficWatchItem);
 
@@ -162,7 +168,6 @@ namespace Raven.Server.Dashboard
             yield return indexingSpeed;
             yield return trafficWatch;
             yield return drivesUsage;
-            
         }
 
         private static void UpdateMountPoint(
@@ -199,6 +204,7 @@ namespace Raven.Server.Dashboard
             }
 
             existingDatabaseUsage.Size += mountPointUsage.UsedSpace;
+            existingDatabaseUsage.TempBuffersSize += mountPointUsage.UsedSpaceByTempBuffers;
         }
 
         private static void SetOfflineDatabaseInfo(
@@ -253,10 +259,16 @@ namespace Raven.Server.Dashboard
             if (databaseInfo.MountPointsUsage == null)
                 return;
 
-            var drives = DriveInfo.GetDrives();
             foreach (var mountPointUsage in databaseInfo.MountPointsUsage)
             {
-                var diskSpaceResult = DiskSpaceChecker.GetFreeDiskSpace(mountPointUsage.DiskSpaceResult.DriveName, drives);
+                var driveName = mountPointUsage.DiskSpaceResult.DriveName;
+                var diskSpaceResult = DiskSpaceChecker.GetDiskSpaceInfo(
+                    mountPointUsage.DiskSpaceResult.DriveName,
+                    new DriveInfoBase
+                    {
+                        DriveName = driveName
+                    });
+
                 if (diskSpaceResult != null)
                 {
                     // update the latest drive info

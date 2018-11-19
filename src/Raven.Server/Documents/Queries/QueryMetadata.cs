@@ -50,7 +50,7 @@ namespace Raven.Server.Documents.Queries
             else
                 IndexName = fromToken.FieldValue;
 
-            if (IsDynamic == false || IsGroupBy || IsDistinct)
+            if (IsDynamic == false || IsGroupBy)
                 IsCollectionQuery = false;
 
             DeclaredFunctions = Query.DeclaredFunctions;
@@ -72,11 +72,14 @@ namespace Raven.Server.Documents.Queries
 
         public bool HasMoreLikeThis { get; private set; }
 
+        public bool HasBoost { get; private set; }
+
         public bool HasIntersect { get; private set; }
 
         public bool HasCmpXchg { get; private set; }
 
         public bool IsCollectionQuery { get; private set; } = true;
+
         public Dictionary<StringSegment, (string FunctionText, Esprima.Ast.Program Program)> DeclaredFunctions { get; }
 
         public readonly string CollectionName;
@@ -107,6 +110,8 @@ namespace Raven.Server.Documents.Queries
 
         public bool HasIncludeOrLoad;
 
+        public bool HasOrderByRandom;
+
         private void AddExistField(QueryFieldName fieldName, BlittableJsonReaderObject parameters)
         {
             IndexFieldNames.Add(GetIndexFieldName(fieldName, parameters));
@@ -125,13 +130,13 @@ namespace Raven.Server.Documents.Queries
         {
             var indexFieldName = GetIndexFieldName(fieldName, parameters);
 
-            if (operatorType == null && 
+            if (operatorType == null &&
                 // to support startsWith(id(), ...)
                 string.Equals(methodName, "startsWith", StringComparison.OrdinalIgnoreCase))
                 operatorType = OperatorType.Equal;
 
-            if (search || exact || spatial != null || isNegated || 
-                operatorType != OperatorType.Equal )
+            if (search || exact || spatial != null || isNegated ||
+                operatorType != OperatorType.Equal)
             {
                 IsCollectionQuery = false;
             }
@@ -211,7 +216,7 @@ namespace Raven.Server.Documents.Queries
                         ThrowInvalidOperatorTypeInOrderBy(order.Expression.Type.ToString(), QueryText, parameters);
                     }
 
-                    if (IsCollectionQuery && (OrderBy.Length > 1 || OrderBy[0].OrderingType != OrderByFieldType.Random))
+                    if (IsCollectionQuery && OrderBy.Length > 0)
                         IsCollectionQuery = false;
                 }
             }
@@ -272,7 +277,7 @@ namespace Raven.Server.Documents.Queries
             {
                 if (callExpression.Callee is Identifier identifier)
                 {
-                    if (identifier.Name == "load")
+                    if (identifier.Name == "load" || identifier.Name == "include")
                     {
                         HasIncludeOrLoad = true;
                     }
@@ -463,6 +468,8 @@ namespace Raven.Server.Documents.Queries
             }
             if (me.Name.Equals("random", StringComparison.OrdinalIgnoreCase))
             {
+                HasOrderByRandom = true;
+
                 if (me.Arguments == null || me.Arguments.Count == 0)
                     return new OrderByField(null, OrderByFieldType.Random, asc);
 
@@ -946,7 +953,7 @@ namespace Raven.Server.Documents.Queries
 
         public QueryFieldName GetIndexFieldName(FieldExpression fe, BlittableJsonReaderObject parameters)
         {
-            if (_aliasToName.TryGetValue(fe.Compound[0], out var indexFieldName) && 
+            if (_aliasToName.TryGetValue(fe.Compound[0], out var indexFieldName) &&
                 fe.Compound[0] != Query.From.Alias)
             {
                 if (fe.Compound.Count != 1)
@@ -1414,7 +1421,7 @@ namespace Raven.Server.Documents.Queries
                         _metadata.AddExistField(fieldName, parameters);
                         break;
                     case MethodType.Boost:
-
+                        _metadata.HasBoost = true;
                         var firstArg = arguments.Count == 0 ? null : arguments[0];
 
                         if (firstArg == null)
@@ -1491,7 +1498,16 @@ namespace Raven.Server.Documents.Queries
                 AutoSpatialOptions fieldOptions = null;
                 QueryFieldName fieldName;
                 if (_metadata.IsDynamic == false)
-                    fieldName = _metadata.ExtractFieldNameFromFirstArgument(arguments, methodName, parameters);
+                {
+                    if (arguments.Count == 0)
+                        throw new InvalidQueryException($"Method {methodName}() expects at least one argument to be passed", QueryText, parameters);
+
+                    var argument = arguments[0];
+                    if (argument is FieldExpression == false && argument is ValueExpression == false)
+                        throw new InvalidQueryException($"Method {methodName}() expects that first argument will be a field name when static index is queried", QueryText, parameters);
+
+                    fieldName = ExtractFieldNameFromArgument(argument, methodName, parameters, QueryText);
+                }
                 else
                 {
                     if (!(arguments[0] is MethodExpression spatialExpression))

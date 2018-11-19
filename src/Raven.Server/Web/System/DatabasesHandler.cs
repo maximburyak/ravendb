@@ -137,14 +137,13 @@ namespace Raven.Server.Web.System
                                 })
                                 )
                             ),
-                            [nameof(Topology.Etag)] = dbRecord.Topology.Stamp.Index
+                            [nameof(Topology.Etag)] = dbRecord.Topology.Stamp?.Index ?? -1
                         });
                     }
                 }
             }
             return Task.CompletedTask;
         }
-
 
         // we can't use '/database/is-loaded` because that conflict with the `/databases/<db-name>`
         // route prefix
@@ -192,37 +191,30 @@ namespace Raven.Server.Web.System
                 ApiKey = apiKey,
                 EnableBasicAuthenticationOverUnsecuredHttp = enableBasicAuthenticationOverUnsecuredHttp ?? false
             }, ServerStore);
-
-            try
-            {
-                var buildInfo = await migrator.GetBuildInfo();
-                var authorized = new Reference<bool>();
-                var isLegacyOAuthToken = new Reference<bool>();
-                var databaseNames = await migrator.GetDatabaseNames(buildInfo.MajorVersion, authorized, isLegacyOAuthToken);
-                var fileSystemNames = await migrator.GetFileSystemNames(buildInfo.MajorVersion);
             
-                using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
-                using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
-                {
-                    var json = new DynamicJsonValue
-                    {
-                        [nameof(BuildInfoWithResourceNames.BuildVersion)] = buildInfo.BuildVersion,
-                        [nameof(BuildInfoWithResourceNames.ProductVersion)] = buildInfo.ProductVersion,
-                        [nameof(BuildInfoWithResourceNames.MajorVersion)] = buildInfo.MajorVersion,
-                        [nameof(BuildInfoWithResourceNames.FullVersion)] = buildInfo.FullVersion,
-                        [nameof(BuildInfoWithResourceNames.DatabaseNames)] = TypeConverter.ToBlittableSupportedType(databaseNames),
-                        [nameof(BuildInfoWithResourceNames.FileSystemNames)] = TypeConverter.ToBlittableSupportedType(fileSystemNames),
-                        [nameof(BuildInfoWithResourceNames.Authorized)] = authorized.Value,
-                        [nameof(BuildInfoWithResourceNames.IsLegacyOAuthToken)] = isLegacyOAuthToken.Value
-                    };
-
-                    context.Write(writer, json);
-                    writer.Flush();
-                }
-            }
-            finally
+            var buildInfo = await migrator.GetBuildInfo();
+            var authorized = new Reference<bool>();
+            var isLegacyOAuthToken = new Reference<bool>();
+            var databaseNames = await migrator.GetDatabaseNames(buildInfo.MajorVersion, authorized, isLegacyOAuthToken);
+            var fileSystemNames = await migrator.GetFileSystemNames(buildInfo.MajorVersion);
+        
+            using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
+            using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
             {
-                migrator.DisposeHttpClient();
+                var json = new DynamicJsonValue
+                {
+                    [nameof(BuildInfoWithResourceNames.BuildVersion)] = buildInfo.BuildVersion,
+                    [nameof(BuildInfoWithResourceNames.ProductVersion)] = buildInfo.ProductVersion,
+                    [nameof(BuildInfoWithResourceNames.MajorVersion)] = buildInfo.MajorVersion,
+                    [nameof(BuildInfoWithResourceNames.FullVersion)] = buildInfo.FullVersion,
+                    [nameof(BuildInfoWithResourceNames.DatabaseNames)] = TypeConverter.ToBlittableSupportedType(databaseNames),
+                    [nameof(BuildInfoWithResourceNames.FileSystemNames)] = TypeConverter.ToBlittableSupportedType(fileSystemNames),
+                    [nameof(BuildInfoWithResourceNames.Authorized)] = authorized.Value,
+                    [nameof(BuildInfoWithResourceNames.IsLegacyOAuthToken)] = isLegacyOAuthToken.Value
+                };
+
+                context.Write(writer, json);
+                writer.Flush();
             }
         }
 
@@ -352,13 +344,14 @@ namespace Raven.Server.Web.System
                     // so just report empty values then
                 }
 
-                var size = new Size(db?.GetSizeOnDiskInBytes() ?? 0);
+                var size = db?.GetSizeOnDisk() ?? (new Size(0), new Size(0));
 
                 var databaseInfo = new DatabaseInfo
                 {
                     Name = databaseName,
                     Disabled = disabled,
-                    TotalSize = size,
+                    TotalSize = size.Data,
+                    TempBuffersSize = size.TempBuffers,
 
                     IsAdmin = true, 
                     IsEncrypted = dbRecord.Encrypted,

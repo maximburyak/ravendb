@@ -23,8 +23,10 @@ namespace Raven.Server.NotificationCenter.Notifications
         LicenseManager_LicenseUpdateMessage,
         LicenseManager_HighlyAvailableTasks,
         LicenseManager_LicenseLimit,
+        LicenseManager_AGPL3,
 
         Certificates_DeveloperLetsEncryptRenewal,
+        Certificates_EntireClusterReplaceSuccess,
         Certificates_ReplaceSuccess,
         Certificates_ReplaceError,
         Certificates_ReplacePending,
@@ -44,6 +46,10 @@ namespace Raven.Server.NotificationCenter.Notifications
 
         RevisionsConfigurationNotValid,
 
-        OutOfMemoryException
+        ReplicationMissingAttachments,
+
+        OutOfMemoryException,
+
+        UnexpectedIndexingThreadError
     }
 }

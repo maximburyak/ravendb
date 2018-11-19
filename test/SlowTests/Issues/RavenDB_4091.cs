@@ -41,7 +41,11 @@ namespace SlowTests.Issues
 
                 WaitForIndexing(store);
 
-                var operation = store.Operations.Send(new DeleteByQueryOperation(new IndexQuery { Query = $"FROM INDEX '{new Company_ByName().IndexName}'" }));
+                var operation = store.Operations.Send(new DeleteByQueryOperation(new IndexQuery { Query = $"FROM INDEX '{new Company_ByName().IndexName}'" }, new QueryOperationOptions()
+                {
+                    // let us slow down the operation a bit to make sure we'll get "in-progress" notification before "completed"
+                    MaxOpsPerSecond = 500
+                }));
 
                 var progresses = new List<IOperationProgress>();
 
@@ -50,7 +54,7 @@ namespace SlowTests.Issues
                     progresses.Add(progress);
                 };
 
-                operation.WaitForCompletion(TimeSpan.FromSeconds(15));
+                operation.WaitForCompletion(TimeSpan.FromSeconds(300));
 
                 Assert.NotEmpty(progresses);
 
@@ -71,6 +75,8 @@ namespace SlowTests.Issues
                 WaitForIndexing(store);
 
                 var operation = store.Operations.Send(new PatchByQueryOperation(new IndexQuery { Query = $"FROM INDEX '{new Company_ByName().IndexName}' UPDATE {{this.Sample = 'Value'}}" }));
+
+                Assert.Equal(OperationStatusFetchMode.ChangesApi, operation.StatusFetchMode);
 
                 var progresses = new List<IOperationProgress>();
 

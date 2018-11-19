@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Lucene.Net.Search;
 using Raven.Client;
 using Raven.Client.Documents.Changes;
 using Raven.Client.Documents.Indexes;
@@ -25,6 +26,7 @@ using Raven.Server.NotificationCenter.Notifications;
 using Raven.Server.NotificationCenter.Notifications.Details;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Commands.Indexes;
+using Raven.Server.ServerWide.Context;
 using Raven.Server.Utils;
 using Sparrow.Logging;
 
@@ -75,6 +77,8 @@ namespace Raven.Server.Documents.Indexes
         {
             foreach (var kvp in record.AutoIndexes)
             {
+                _documentDatabase.DatabaseShutdown.ThrowIfCancellationRequested();
+
                 var name = kvp.Key;
                 try
                 {
@@ -144,7 +148,6 @@ namespace Raven.Server.Documents.Indexes
                 .Select(x =>
                 {
                     var field = AutoIndexField.Create(x.Key, x.Value);
-                    field.Aggregation = x.Value.Aggregation;
 
                     Debug.Assert(x.Value.GroupByArrayBehavior == GroupByArrayBehavior.NotApplicable);
 
@@ -155,9 +158,6 @@ namespace Raven.Server.Documents.Indexes
             if (definition.Type == IndexType.AutoMap)
             {
                 var result = new AutoMapIndexDefinition(definition.Collection, mapFields);
-
-                if (definition.LockMode.HasValue)
-                    result.LockMode = definition.LockMode.Value;
 
                 if (definition.Priority.HasValue)
                     result.Priority = definition.Priority.Value;
@@ -172,16 +172,12 @@ namespace Raven.Server.Documents.Indexes
                     .Select(x =>
                     {
                         var field = AutoIndexField.Create(x.Key, x.Value);
-                        field.Aggregation = x.Value.Aggregation;
-                        field.GroupByArrayBehavior = x.Value.GroupByArrayBehavior;
 
                         return field;
                     })
                     .ToArray();
 
                 var result = new AutoMapReduceIndexDefinition(definition.Collection, mapFields, groupByFields);
-                if (definition.LockMode.HasValue)
-                    result.LockMode = definition.LockMode.Value;
 
                 if (definition.Priority.HasValue)
                     result.Priority = definition.Priority.Value;
@@ -196,6 +192,8 @@ namespace Raven.Server.Documents.Indexes
         {
             foreach (var kvp in record.Indexes)
             {
+                _documentDatabase.DatabaseShutdown.ThrowIfCancellationRequested();
+
                 var name = kvp.Key;
                 var definition = kvp.Value;
 
@@ -302,13 +300,14 @@ namespace Raven.Server.Documents.Indexes
             }
 
             CreateIndexInternal(index);
-
         }
 
         private void HandleDeletes(DatabaseRecord record, long raftLogIndex)
         {
             foreach (var index in _indexes)
             {
+                _documentDatabase.DatabaseShutdown.ThrowIfCancellationRequested();
+
                 var indexNormalizedName = index.Name;
                 if (indexNormalizedName.StartsWith(Constants.Documents.Indexing.SideBySideIndexNamePrefix))
                 {
@@ -362,7 +361,7 @@ namespace Raven.Server.Documents.Indexes
             var instance = IndexCompilationCache.GetIndexInstance(definition); // pre-compile it and validate
 
             if (definition.Type == IndexType.MapReduce)
-                MapReduceIndex.ValidateReduceResultsCollectionName(definition, instance, _documentDatabase);
+                MapReduceIndex.ValidateReduceResultsCollectionName(definition, instance, _documentDatabase, NeedToCheckIfCollectionEmpty(definition));
 
             var command = new PutIndexCommand(definition, _documentDatabase.Name);
 
@@ -380,6 +379,45 @@ namespace Raven.Server.Documents.Indexes
             }
         }
 
+        private bool NeedToCheckIfCollectionEmpty(IndexDefinition definition)
+        {
+            var currentIndex = GetIndex(definition.Name);
+            var replacementIndexName = Constants.Documents.Indexing.SideBySideIndexNamePrefix + definition.Name;
+            var replacementIndex = GetIndex(replacementIndexName);
+            if (currentIndex == null && replacementIndex == null)
+            {
+                // new index
+                return true;
+            }
+
+            if (currentIndex == null)
+            {
+                // we deleted the in memory index but didn't delete the replacement yet
+                return true;
+            }
+
+            var creationOptions = GetIndexCreationOptions(definition, currentIndex, out var _);
+            IndexCreationOptions replacementCreationOptions;
+            if (replacementIndex != null)
+            {
+                replacementCreationOptions = GetIndexCreationOptions(definition, replacementIndex, out var _);
+            }
+            else
+            {
+                // the replacement index doesn't exist
+                return IsCreateOrUpdate(creationOptions);
+            }
+
+            return IsCreateOrUpdate(creationOptions) ||
+                   IsCreateOrUpdate(replacementCreationOptions);
+        }
+
+        private static bool IsCreateOrUpdate(IndexCreationOptions creationOptions)
+        {
+            return creationOptions == IndexCreationOptions.Create ||
+                   creationOptions == IndexCreationOptions.Update;
+        }
+
         public async Task<Index> CreateIndex(IndexDefinitionBase definition)
         {
             if (definition == null)
@@ -388,10 +426,10 @@ namespace Raven.Server.Documents.Indexes
             if (definition is MapIndexDefinition)
                 return await CreateIndex(((MapIndexDefinition)definition).IndexDefinition);
 
+            ValidateIndexName(definition.Name, isStatic: false);
+
             try
             {
-                ValidateIndexName(definition.Name, isStatic: false);
-
                 var command = PutAutoIndexCommand.Create((AutoIndexDefinitionBase)definition, _documentDatabase.Name);
 
                 var (etag, _) = await _serverStore.SendToLeaderAsync(command);
@@ -531,7 +569,24 @@ namespace Raven.Server.Documents.Indexes
             return IndexCreationOptions.Update;
         }
 
-        private void ValidateIndexName(string name, bool isStatic)
+        public static bool IsValidIndexName(string name, bool isStatic, out string errorMessage)
+        {
+            errorMessage = null;
+
+            try
+            {
+                ValidateIndexName(name, isStatic);
+            }
+            catch (Exception e)
+            {
+                errorMessage = e.Message.Split('\n')[0];
+                return false;
+            }
+
+            return true;
+        }
+
+        public static void ValidateIndexName(string name, bool isStatic)
         {
             if (string.IsNullOrWhiteSpace(name))
                 throw new ArgumentException("Index name cannot be empty!");
@@ -543,7 +598,7 @@ namespace Raven.Server.Documents.Indexes
                 throw new ArgumentException($"Index name '{name}' not permitted. Static index name cannot start with 'Auto/'", nameof(name));
 
             if (isStatic && NameUtils.IsValidIndexName(name) == false)
-                throw new ArgumentException($"Index name '{name}' not permitted. Index name must math '{NameUtils.ValidIndexNameCharacters}' regular expression", nameof(name));
+                throw new ArgumentException($"Index name '{name}' is not permitted. Only letters, digits and characters that match regex '{NameUtils.ValidIndexNameCharacters}' are allowed.", nameof(name));
         }
 
         public Index ResetIndex(string name)
@@ -812,7 +867,7 @@ namespace Raven.Server.Documents.Indexes
                             index = MapIndex.CreateNew(staticIndexDefinition, _documentDatabase);
                             break;
                         case IndexType.MapReduce:
-                            index = MapReduceIndex.CreateNew(staticIndexDefinition, _documentDatabase);
+                            index = MapReduceIndex.CreateNew(staticIndexDefinition, _documentDatabase, isIndexReset: true);
                             break;
                         default:
                             throw new NotSupportedException($"Cannot create {staticIndexDefinition.Type} index from IndexDefinition");
@@ -825,13 +880,11 @@ namespace Raven.Server.Documents.Indexes
             }
             catch (TimeoutException toe)
             {
-                throw new IndexCreationException($"Failed to reset index: {index.Name}, the cluster is probably down. " +
-                                                 $"Node {_serverStore.NodeTag} state is {_serverStore.LastStateChangeReason()}", toe);
+                throw new IndexCreationException($"Failed to reset index: {index.Name}", toe);
             }
             catch (Exception e)
             {
-                throw new IndexCreationException($"Failed to reset index: {index.Name}, unexpected error during index creation. " +
-                                                 $"Node {_serverStore.NodeTag} state is {_serverStore.LastStateChangeReason()}", e);
+                throw new IndexCreationException($"Failed to reset index: {index.Name}", e);
             }
         }
 
@@ -941,6 +994,30 @@ namespace Raven.Server.Documents.Indexes
             try
             {
                 index = Index.Open(indexPath, _documentDatabase);
+
+                var differences = IndexDefinitionCompareDifferences.None;
+
+                if (staticIndexDefinition != null)
+                {
+                    if (staticIndexDefinition.LockMode != null && index.Definition.LockMode != staticIndexDefinition.LockMode)
+                        differences |= IndexDefinitionCompareDifferences.LockMode;
+
+                    if (staticIndexDefinition.Priority != null && index.Definition.Priority != staticIndexDefinition.Priority)
+                        differences |= IndexDefinitionCompareDifferences.Priority;
+                }
+                else if (autoIndexDefinition != null)
+                {
+                    if (autoIndexDefinition.Priority != index.Definition.Priority)
+                        differences |= IndexDefinitionCompareDifferences.Priority;
+                }
+
+                if (differences != IndexDefinitionCompareDifferences.None)
+                {
+                    // database record has different lock mode / priority setting than persisted locally
+
+                    UpdateStaticIndexLockModeAndPriority(staticIndexDefinition, index, differences);
+                }
+
                 index.Start();
                 if (_logger.IsInfoEnabled)
                     _logger.Info($"Started {index.Name} from {indexPath}");
@@ -949,7 +1026,7 @@ namespace Raven.Server.Documents.Indexes
             }
             catch (Exception e)
             {
-                var alreadyFaulted = _indexes.TryGetByName(name, out var i) && 
+                var alreadyFaulted = _indexes.TryGetByName(name, out var i) &&
                                      i is FaultyInMemoryIndex;
 
                 index?.Dispose();
@@ -960,8 +1037,8 @@ namespace Raven.Server.Documents.Indexes
 
                 var configuration = new FaultyInMemoryIndexConfiguration(path, _documentDatabase.Configuration);
 
-                var fakeIndex = autoIndexDefinition != null 
-                    ? new FaultyInMemoryIndex(e, name, configuration, CreateAutoDefinition(autoIndexDefinition)) 
+                var fakeIndex = autoIndexDefinition != null
+                    ? new FaultyInMemoryIndex(e, name, configuration, CreateAutoDefinition(autoIndexDefinition))
                     : new FaultyInMemoryIndex(e, name, configuration, staticIndexDefinition);
 
                 var message = $"Could not open index at '{indexPath}'. Created in-memory, fake instance: {fakeIndex.Name}";
@@ -993,14 +1070,19 @@ namespace Raven.Server.Documents.Indexes
 
         public void RunIdleOperations()
         {
+            DatabaseRecord record;
+            using (_serverStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
+            using (context.OpenReadTransaction())
+                record = _serverStore.Cluster.ReadDatabase(context, _documentDatabase.Name);
+
+            if (record.Topology.Members[0] != _serverStore.NodeTag)
+                return;
+
             AsyncHelpers.RunSync(HandleUnusedAutoIndexes);
         }
 
         private async Task HandleUnusedAutoIndexes()
         {
-            if (_serverStore.IsLeader() == false)
-                return;
-
             var timeToWaitBeforeMarkingAutoIndexAsIdle = _documentDatabase.Configuration.Indexing.TimeToWaitBeforeMarkingAutoIndexAsIdle;
             var timeToWaitBeforeDeletingAutoIndexMarkedAsIdle = _documentDatabase.Configuration.Indexing.TimeToWaitBeforeDeletingAutoIndexMarkedAsIdle;
             var ageThreshold = timeToWaitBeforeMarkingAutoIndexAsIdle.AsTimeSpan.Add(timeToWaitBeforeMarkingAutoIndexAsIdle.AsTimeSpan); // idle * 2
@@ -1141,23 +1223,26 @@ namespace Raven.Server.Documents.Indexes
 
             _indexes.ReplaceIndex(oldIndexName, oldIndex, newIndex);
 
-            var needToStop = PoolOfThreads.LongRunningWork.Current != newIndex._indexingThread;
+            using (newIndex.DrainRunningQueries()) // to ensure nobody will start index meanwhile if we stop it here
+            {
+                var needToStop = newIndex.Status == IndexRunningStatus.Running && PoolOfThreads.LongRunningWork.Current != newIndex._indexingThread;
 
-            if (needToStop)
-            {
-                // stop the indexing to allow renaming the index 
-                // the write tx required to rename it might be hold by indexing thread
-                ExecuteIndexAction(() => newIndex.Stop());
-            }
-
-            try
-            {
-                newIndex.Rename(oldIndexName);
-            }
-            finally
-            {
                 if (needToStop)
-                    ExecuteIndexAction(newIndex.Start);
+                {
+                    // stop the indexing to allow renaming the index 
+                    // the write tx required to rename it might be hold by indexing thread
+                    ExecuteIndexAction(() => newIndex.Stop());
+                }
+
+                try
+                {
+                    newIndex.Rename(oldIndexName);
+                }
+                finally
+                {
+                    if (needToStop)
+                        ExecuteIndexAction(newIndex.Start);
+                }
             }
 
             newIndex.ResetIsSideBySideAfterReplacement();
@@ -1248,10 +1333,9 @@ namespace Raven.Server.Documents.Indexes
             if (index == null)
                 IndexDoesNotExistException.ThrowFor(name);
 
-            var faultyInMemoryIndex = index as FaultyInMemoryIndex;
-            if (faultyInMemoryIndex != null)
+            if (index.Type == IndexType.Faulty || index.Type.IsAuto())
             {
-                faultyInMemoryIndex.SetLock(mode); // this will throw proper exception
+                index.SetLock(mode);  // this will throw proper exception
                 return;
             }
 

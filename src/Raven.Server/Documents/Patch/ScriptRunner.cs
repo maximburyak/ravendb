@@ -48,7 +48,7 @@ namespace Raven.Server.Documents.Patch
             _creationTime = DateTime.UtcNow;
         }
 
-        public DynamicJsonValue GetDebugInfo(bool detailed=false)
+        public DynamicJsonValue GetDebugInfo(bool detailed = false)
         {
             var djv = new DynamicJsonValue
             {
@@ -56,10 +56,10 @@ namespace Raven.Server.Documents.Patch
                 ["CreationTime"] = _creationTime,
                 ["LastRun"] = _lastRun,
                 ["Runs"] = Runs,
-                ["CachedScriptsCount"] = _cache.Count                
+                ["CachedScriptsCount"] = _cache.Count
             };
             if (detailed)
-                djv["ScriptsSource"] = ScriptsSource;                
+                djv["ScriptsSource"] = ScriptsSource;
 
             return djv;
         }
@@ -111,6 +111,8 @@ namespace Raven.Server.Documents.Patch
             public HashSet<string> Includes;
             private HashSet<string> _documentIds;
             public bool ReadOnly;
+            public string OriginalDocumentId;
+            public bool RefreshOriginalDocument;
             private readonly ConcurrentLruRegexCache _regexCache = new ConcurrentLruRegexCache(1024);
 
             public SingleRun(DocumentDatabase database, RavenConfiguration configuration, ScriptRunner runner, List<string> scriptsSource)
@@ -133,7 +135,9 @@ namespace Raven.Server.Documents.Patch
 
                 });
                 ScriptEngine.SetValue("output", new ClrFunctionInstance(ScriptEngine, OutputDebug));
-
+                ObjectInstance consoleObject = new ObjectInstance(ScriptEngine);
+                consoleObject.FastAddProperty("log", new ClrFunctionInstance(ScriptEngine, OutputDebug), false, false, false);
+                ScriptEngine.SetValue("console", consoleObject);
                 ScriptEngine.SetValue("include", new ClrFunctionInstance(ScriptEngine, IncludeDoc));
                 ScriptEngine.SetValue("load", new ClrFunctionInstance(ScriptEngine, LoadDocument));
                 ScriptEngine.SetValue("LoadDocument", new ClrFunctionInstance(ScriptEngine, ThrowOnLoadDocument));
@@ -158,6 +162,9 @@ namespace Raven.Server.Documents.Patch
                 ScriptEngine.SetValue("Raven_Max", new ClrFunctionInstance(ScriptEngine, Raven_Max));
 
                 ScriptEngine.SetValue("convertJsTimeToTimeSpanString", new ClrFunctionInstance(ScriptEngine, ConvertJsTimeToTimeSpanString));
+
+                ScriptEngine.SetValue("toStringWithFormat", new ClrFunctionInstance(ScriptEngine, ToStringWithFormat));
+
 
                 ScriptEngine.SetValue("scalarToRawString", new ClrFunctionInstance(ScriptEngine, ScalarToRawString));
 
@@ -288,13 +295,13 @@ namespace Raven.Server.Documents.Patch
             private static JsValue GetLastModified(JsValue self, JsValue[] args)
             {
                 if (args.Length != 1)
-                    throw new InvalidOperationException("id(doc) must be called with a single argument");
+                    throw new InvalidOperationException("lastModified(doc) must be called with a single argument");
 
                 if (args[0].IsNull() || args[0].IsUndefined())
                     return args[0];
 
                 if (args[0].IsObject() == false)
-                    throw new InvalidOperationException("id(doc) must be called with an object argument");
+                    throw new InvalidOperationException("lastModified(doc) must be called with an object argument");
 
                 if (args[0].AsObject() is BlittableObjectInstance doc)
                 {
@@ -406,7 +413,14 @@ namespace Raven.Server.Documents.Patch
                 {
                     reader = JsBlittableBridge.Translate(_jsonCtx, ScriptEngine, args[1].AsObject(), usageMode: BlittableJsonDocumentBuilder.UsageMode.ToDisk);
 
-                    var put = _database.DocumentsStorage.Put(_docsCtx, id, _docsCtx.GetLazyString(changeVector), reader);
+                    var put = _database.DocumentsStorage.Put(
+                        _docsCtx,
+                        id,
+                        _docsCtx.GetLazyString(changeVector),
+                        reader,
+                        //RavenDB-11391 This flag was added to cause attachment metadata table check & remove metadata properties if not necessary
+                        nonPersistentFlags: NonPersistentDocumentFlags.ResolveAttachmentsConflict
+                        );
 
                     if (DebugMode)
                     {
@@ -416,6 +430,9 @@ namespace Raven.Server.Documents.Patch
                             ["Data"] = reader
                         });
                     }
+
+                    if (RefreshOriginalDocument == false && string.Equals(put.Id, OriginalDocumentId, StringComparison.OrdinalIgnoreCase))
+                        RefreshOriginalDocument = true;
 
                     return put.Id;
                 }
@@ -451,6 +468,10 @@ namespace Raven.Server.Documents.Patch
                 if (DebugMode)
                     DebugActions.DeleteDocument.Add(id);
                 var result = _database.DocumentsStorage.Delete(_docsCtx, id, changeVector);
+
+                if (RefreshOriginalDocument && string.Equals(OriginalDocumentId, id, StringComparison.OrdinalIgnoreCase))
+                    RefreshOriginalDocument = false;
+
                 return new JsValue(result != null);
             }
 
@@ -621,6 +642,60 @@ namespace Raven.Server.Documents.Patch
                 return new JsValue(asTimeSpan.ToString());
             }
 
+            private static JsValue ToStringWithFormat(JsValue self, JsValue[] args)
+            {
+                if (args.Length < 1 || args.Length > 3)
+                {
+                    throw new InvalidOperationException($"No overload for method 'toStringWithFormat' takes {args.Length} arguments. " +
+                                                        "Supported overloads are : toStringWithFormat(object), toStringWithFormat(object, format), toStringWithFormat(object, culture), toStringWithFormat(object, format, culture).");
+                }
+
+                var cultureInfo = CultureInfo.InvariantCulture;
+                string format = null;
+
+                for (var i = 1; i < args.Length; i++)
+                {
+                    if (args[i].IsString() == false)
+                    {
+                        throw new InvalidOperationException("toStringWithFormat : 'format' and 'culture' must be string arguments");
+                    }
+
+                    var arg = args[i].AsString();
+                    if (CultureHelper.Cultures.TryGetValue(arg, out var culture))
+                    {
+                        cultureInfo = culture;
+                        continue;
+                    }
+
+                    format = arg;
+                }
+
+                if (args[0].IsDate())
+                {
+                    var date = args[0].AsDate().ToDateTime();
+                    return format != null ?
+                        date.ToString(format, cultureInfo) :
+                        date.ToString(cultureInfo);
+
+                }
+
+                if (args[0].IsNumber())
+                {
+                    var num = args[0].AsNumber();
+                    return format != null ?
+                        num.ToString(format, cultureInfo) :
+                        num.ToString(cultureInfo);
+                }
+
+                if (args[0].IsBoolean() == false)
+                {
+                    throw new InvalidOperationException($"toStringWithFormat() is not supported for objects of type {args[0].Type} ");
+                }
+
+                var boolean = args[0].AsBoolean();
+                return boolean.ToString(cultureInfo);
+            }
+
             private static JsValue StartsWith(JsValue self, JsValue[] args)
             {
                 if (args.Length != 2 || args[0].IsString() == false || args[1].IsString() == false)
@@ -720,19 +795,17 @@ namespace Raven.Server.Documents.Patch
             {
                 if (string.IsNullOrEmpty(key))
                     return JsValue.Undefined;
-                BlittableJsonReaderObject value = null;
                 var prefix = _database.Name + "/";
                 using (_database.ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext ctx))
                 using (ctx.OpenReadTransaction())
                 {
-                    value = _database.ServerStore.Cluster.GetCompareExchangeValue(ctx, prefix + key).Value;
+                    var value = _database.ServerStore.Cluster.GetCompareExchangeValue(ctx, prefix + key).Value;
+                    if (value == null)
+                        return null;
+                    // RavenDB-12067: Accessing a blittable whose context was disposed.
+                    var jsValue = TranslateToJs(ScriptEngine, _jsonCtx, value.Clone(_jsonCtx));
+                    return jsValue.AsObject().Get("Object");
                 }
-
-                if (value == null)
-                    return null;
-
-                var jsValue = TranslateToJs(ScriptEngine, _jsonCtx, value);
-                return jsValue.AsObject().Get("Object");
             }
 
             private JsValue LoadDocumentInternal(string id)
@@ -757,9 +830,17 @@ namespace Raven.Server.Documents.Patch
 
             public ScriptRunnerResult Run(JsonOperationContext jsonCtx, DocumentsOperationContext docCtx, string method, object[] args)
             {
+                return Run(jsonCtx, docCtx, method, null, args);
+            }
+
+            public ScriptRunnerResult Run(JsonOperationContext jsonCtx, DocumentsOperationContext docCtx, string method, string documentId, object[] args)
+            {
                 _docsCtx = docCtx;
                 _jsonCtx = jsonCtx ?? ThrowArgumentNull();
+
                 Reset();
+                OriginalDocumentId = documentId;
+
                 if (_args.Length != args.Length)
                     _args = new JsValue[args.Length];
                 for (var i = 0; i < args.Length; i++)
@@ -814,6 +895,8 @@ namespace Raven.Server.Documents.Patch
                 }
                 Includes?.Clear();
                 PutOrDeleteCalled = false;
+                OriginalDocumentId = null;
+                RefreshOriginalDocument = false;
                 ScriptEngine.ResetCallStack();
                 ScriptEngine.ResetStatementsCount();
                 ScriptEngine.ResetTimeoutTicks();
@@ -862,7 +945,7 @@ namespace Raven.Server.Documents.Patch
 
                 if (o is BlittableJsonReaderObject json)
                 {
-                    return new BlittableObjectInstance(engine, null, json, null, null);
+                    return new BlittableObjectInstance(engine, null, Clone(json), null, null);
                 }
 
                 if (o == null)

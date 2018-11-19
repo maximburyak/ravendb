@@ -16,6 +16,7 @@ using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 using Raven.Server.Utils;
 using Sparrow.Json.Parsing;
+using Sparrow.Utils;
 using Xunit;
 
 namespace SlowTests.Server.Documents.Indexing.Static
@@ -28,24 +29,23 @@ namespace SlowTests.Server.Documents.Indexing.Static
         public async Task Auto_index_should_produce_multiple_outputs(int numberOfUsers, string[] locations)
         {
             using (var database = CreateDocumentDatabase())
+            using (var index = AutoMapReduceIndex.CreateNew(new AutoMapReduceIndexDefinition("Users", new[]
             {
-                var index = AutoMapReduceIndex.CreateNew(new AutoMapReduceIndexDefinition("Users", new[]
+                new AutoIndexField
                 {
-                    new AutoIndexField
-                    {
-                        Name = "Count",
-                        Aggregation = AggregationOperation.Count,
-                        Storage = FieldStorage.Yes
-                    }
-                }, new[]
+                    Name = "Count",
+                    Aggregation = AggregationOperation.Count,
+                    Storage = FieldStorage.Yes
+                }
+            }, new[]
+            {
+                new AutoIndexField
                 {
-                    new AutoIndexField
-                    {
-                        Name = "Location",
-                        Storage = FieldStorage.Yes
-                    },
-                }), database);
-
+                    Name = "Location",
+                    Storage = FieldStorage.Yes
+                },
+            }), database))
+            {
                 var mapReduceContext = new MapReduceIndexingContext();
                 using (var contextPool = new TransactionContextPool(database.DocumentsStorage.Environment))
                 {
@@ -65,21 +65,20 @@ namespace SlowTests.Server.Documents.Indexing.Static
         public async Task Static_index_should_produce_multiple_outputs(int numberOfUsers, string[] locations)
         {
             using (var database = CreateDocumentDatabase())
+            using (var index = MapReduceIndex.CreateNew(new IndexDefinition()
             {
-                var index = MapReduceIndex.CreateNew(new IndexDefinition()
+                Name = "Users_ByCount_GroupByLocation",
+                Maps = { "from user in docs.Users select new { user.Location, Count = 1 }" },
+                Reduce =
+                    "from result in results group result by result.Location into g select new { Location = g.Key, Count = g.Sum(x => x.Count) }",
+                Type = IndexType.MapReduce,
+                Fields =
                 {
-                    Name = "Users_ByCount_GroupByLocation",
-                    Maps = { "from user in docs.Users select new { user.Location, Count = 1 }" },
-                    Reduce =
-                        "from result in results group result by result.Location into g select new { Location = g.Key, Count = g.Sum(x => x.Count) }",
-                    Type = IndexType.MapReduce,
-                    Fields =
-                    {
-                        {"Location", new IndexFieldOptions {Storage = FieldStorage.Yes}},
-                        {"Count", new IndexFieldOptions {Storage = FieldStorage.Yes}}
-                    }
-                }, database);
-
+                    {"Location", new IndexFieldOptions {Storage = FieldStorage.Yes}},
+                    {"Count", new IndexFieldOptions {Storage = FieldStorage.Yes}}
+                }
+            }, database))
+            {
                 var mapReduceContext = new MapReduceIndexingContext();
                 using (var contextPool = new TransactionContextPool(database.DocumentsStorage.Environment))
                 {
@@ -121,7 +120,7 @@ namespace SlowTests.Server.Documents.Indexing.Static
                     mapReduceContext.StoreByReduceKeyHash.Add(hashOfReduceKey, store);
 
                     var writeOperation =
-                        new Lazy<IndexWriteOperation>(() => index.IndexPersistence.OpenIndexWriter(tx.InnerTransaction));
+                        new Lazy<IndexWriteOperation>(() => index.IndexPersistence.OpenIndexWriter(tx.InnerTransaction, null));
 
                     var stats = new IndexingStatsScope(new IndexingRunStats());
                     reducer.Execute(null, indexContext,
@@ -184,7 +183,7 @@ namespace SlowTests.Server.Documents.Indexing.Static
                     mapReduceContext.StoreByReduceKeyHash.Add(hashOfReduceKey, store);
 
                     var writeOperation =
-                        new Lazy<IndexWriteOperation>(() => index.IndexPersistence.OpenIndexWriter(tx.InnerTransaction));
+                        new Lazy<IndexWriteOperation>(() => index.IndexPersistence.OpenIndexWriter(tx.InnerTransaction, null));
                     try
                     {
 
@@ -248,7 +247,7 @@ namespace SlowTests.Server.Documents.Indexing.Static
                     mapReduceContext.StoreByReduceKeyHash.Add(hashOfReduceKey, store);
 
                     var writeOperation =
-                        new Lazy<IndexWriteOperation>(() => index.IndexPersistence.OpenIndexWriter(tx.InnerTransaction));
+                        new Lazy<IndexWriteOperation>(() => index.IndexPersistence.OpenIndexWriter(tx.InnerTransaction, null));
                     try
                     {
                         var stats = new IndexingStatsScope(new IndexingRunStats());

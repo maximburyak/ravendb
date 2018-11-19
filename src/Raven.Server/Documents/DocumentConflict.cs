@@ -45,16 +45,17 @@ namespace Raven.Server.Documents
                 StorageId = doc.StorageId,
                 ChangeVector = doc.ChangeVector,
                 LastModified = doc.LastModified,
-                Collection = ctx.GetLazyStringForFieldWithCaching(CollectionName.GetCollectionName(doc.Data))
+                Collection = ctx.GetLazyStringForFieldWithCaching(CollectionName.GetCollectionName(doc.Data)),
+                Flags = doc.Flags
             };
         }
 
-        public static DocumentConflict From(DocumentTombstone tombstone)
+        public static DocumentConflict From(Tombstone tombstone)
         {
             if (tombstone == null)
                 return null;
 
-            Debug.Assert(tombstone.Type == DocumentTombstone.TombstoneType.Document);
+            Debug.Assert(tombstone.Type == Tombstone.TombstoneType.Document);
 
             return new DocumentConflict
             {
@@ -64,7 +65,8 @@ namespace Raven.Server.Documents
                 StorageId = tombstone.StorageId,
                 ChangeVector = tombstone.ChangeVector,
                 LastModified = tombstone.LastModified,
-                Collection = tombstone.Collection
+                Collection = tombstone.Collection,
+                Flags = tombstone.Flags
             };
         }
 

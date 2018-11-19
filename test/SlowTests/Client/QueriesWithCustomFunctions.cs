@@ -1601,7 +1601,7 @@ from Users as u load u.FriendId as _doc_0, u.DetailIds as _docs_1[] select outpu
                         };
 
                     Assert.Equal("from Users as u select { FirstName : u.Name, " +
-                                 "LastName : u.LastName!=null?u.LastName:\"Has no last name\" }"
+                                 "LastName : (u.LastName!=null?u.LastName:\"Has no last name\") }"
                         , query.ToString());
 
                     var queryResult = query.ToList();
@@ -1766,7 +1766,7 @@ from Users as u load u.FriendId as _doc_0, u.DetailIds as _docs_1[] select outpu
                                     ToUpper = u.Name.ToUpper(),
                                     ToLower = u.Name.ToLower(),
                                     Contains = u.Name.Contains("e"),
-                                    Format = $"Name: {u.Name}, LastName : {u.LastName}",
+                                    Format = "Name: "+u.Name+", LastName : "+u.LastName,
                                     Split = u.Name.Split('r', StringSplitOptions.None),
                                     SplitLimit = u.Name.Split(new char[] { 'r' }, 3),
                                     SplitArray = u.Name.Split(new char[] { 'r', 'e' }),
@@ -1790,7 +1790,7 @@ from Users as u load u.FriendId as _doc_0, u.DetailIds as _docs_1[] select outpu
                         "ToUpper : u.Name.toUpperCase(), " +
                         "ToLower : u.Name.toLowerCase(), " +
                         "Contains : u.Name.indexOf(\"e\") !== -1, " +
-                        "Format : \"Name: {0}, LastName : {1}\".format(u.Name, u.LastName), " +
+                        "Format : \"Name: \"+u.Name+\", LastName : \"+u.LastName, " +
                         "Split : u.Name.split(new RegExp(\"r\", \"g\")), " +
                         "SplitLimit : u.Name.split(new RegExp(\"r\", \"g\")), " +
                         "SplitArray : u.Name.split(new RegExp(\"r\"+\"|\"+\"e\", \"g\")), " +
@@ -2837,9 +2837,9 @@ from Orders as o load o.Employee as employee select output(o, employee)" , query
                                  "Take : u.Roles.slice(0, 2), " +
                                  "Skip : u.Roles.slice(2, u.Roles.length), " +
                                  "Max : u.Roles.reduce(function(a, b) { return Raven_Max(a, b);}), " +
-                                 "MaxWithSelector : u.Details.map(function(d){return d.Number;}).reduce(function(a, b) { return Raven_Max(a, b);}), " +
+                                 "MaxWithSelector : u.Details.map(function(d){return d.Number;}).reduce(function(a, b) { return Raven_Max(a, b);}, 0), " +
                                  "Min : u.Roles.reduce(function(a, b) { return Raven_Min(a, b);}), " +
-                                 "MinWithSelector : u.Details.map(function(d){return d.Number;}).reduce(function(a, b) { return Raven_Min(a, b);}), " +
+                                 "MinWithSelector : u.Details.map(function(d){return d.Number;}).reduce(function(a, b) { return Raven_Min(a, b);}, 0), " +
                                  "Reverse : u.Roles.slice().reverse(), " +
                                  "IndexOf : u.Roles.indexOf(\"3\"), " +
                                  "Concat : u.Roles.concat($p0), " +

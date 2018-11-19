@@ -291,7 +291,7 @@ namespace Sparrow
 
             EnsureIsNotBadPointer();
 
-            return new string((char*)_pointer->Ptr, 0, _pointer->Length);
+            return UTF8Encoding.UTF8.GetString(_pointer->Ptr, _pointer->Length);
         }
 
         public string ToString(UTF8Encoding encoding)
@@ -335,7 +335,10 @@ namespace Sparrow
             return encoding.GetString(_pointer->Ptr, _pointer->Length);
         }
 
+        [Obsolete("This is a reference comparison. Use SliceComparer or ByteString.Match instead.", error: true)]
+#pragma warning disable CS0809
         public override bool Equals(object obj)
+#pragma warning restore CS0809
         {
             return obj is ByteString && this == (ByteString)obj;
         }
@@ -363,15 +366,19 @@ namespace Sparrow
             return (int)GetContentHash();
         }
 
+        [Obsolete("This is a reference comparison. Use SliceComparer or ByteString.Match instead.", error: true)]
         public static bool operator ==(ByteString x, ByteString y)
         {
             return x._pointer == y._pointer;
         }
+
+        [Obsolete("This is a reference comparison. Use SliceComparer or ByteString.Match instead.", error: true)]
         public static bool operator !=(ByteString x, ByteString y)
         {
             return !(x == y);
         }
 
+        [Obsolete("This is a reference comparison. Use SliceComparer or ByteString.Match instead.", error: true)]
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool Equals(ByteString other)
         {
@@ -457,12 +464,27 @@ namespace Sparrow
         }
     }
 
-    public struct ByteStringMemoryCache : IByteStringAllocator, ILowMemoryHandler
+    public struct ByteStringMemoryCache : IByteStringAllocator
     {
         private static readonly ThreadLocal<SegmentStack> SegmentsPool;
         private static readonly SharedMultipleUseFlag LowMemoryFlag;
+        private static readonly LowMemoryHandler LowMemoryHandlerInstance = new LowMemoryHandler();
 
         public static readonly NativeMemoryCleaner<SegmentStack, UnmanagedGlobalSegment> Cleaner;
+
+        private class LowMemoryHandler : ILowMemoryHandler
+        {
+            public void LowMemory()
+            {
+                if (LowMemoryFlag.Raise())
+                    Cleaner.CleanNativeMemory(null);
+            }
+
+            public void LowMemoryOver()
+            {
+                LowMemoryFlag.Lower();
+            }
+        }
 
         static ByteStringMemoryCache()
         {
@@ -472,7 +494,7 @@ namespace Sparrow
 
             ThreadLocalCleanup.ReleaseThreadLocalState += CleanForCurrentThread;
 
-            LowMemoryNotification.Instance.RegisterLowMemoryHandler(ByteStringContext.Allocator);
+            LowMemoryNotification.Instance.RegisterLowMemoryHandler(LowMemoryHandlerInstance);
         }
 
         [ThreadStatic]
@@ -545,7 +567,6 @@ namespace Sparrow
             throw new InvalidOperationException("Attempt to return a memory segment that has already been disposed");
         }
 
-
         public static void CleanForCurrentThread()
         {
             if (SegmentsPool.IsValueCreated == false)
@@ -560,27 +581,39 @@ namespace Sparrow
                 current = current.Next;
             }
         }
-
-        public void LowMemory()
-        {
-            if (LowMemoryFlag.Raise())
-                Cleaner.CleanNativeMemory(null);
-        }
-
-        public void LowMemoryOver()
-        {
-            LowMemoryFlag.Lower();
-        }
-
+      
         public class SegmentStack : StackHeader<UnmanagedGlobalSegment>
         {
+            ~SegmentStack()
+            {
+                if (Environment.HasShutdownStarted)
+                    return; // no need
 
+                var current = Interlocked.Exchange(ref Head, HeaderDisposed);
+                try
+                {
+                    while (current != null)
+                    {
+                        var segment = current.Value;
+                        current = current.Next;
+                        if (segment == null)
+                            continue;
+                        if (!segment.InUse.Raise())
+                            continue;
+                        segment.Dispose();
+                    }
+                }
+                catch (ObjectDisposedException)
+                {
+                    // in case that in the future we will throw that exception
+                }
+            }
         }
     }
 
     public sealed class ByteStringContext : ByteStringContext<ByteStringMemoryCache>
     {
-        public const int MinBlockSizeInBytes = 64 * 1024; // If this is changed, we need to change also LogMinBlockSize.
+        public const int MinBlockSizeInBytes = 4 * 1024; // If this is changed, we need to change also LogMinBlockSize.
         public const int MaxAllocationBlockSizeInBytes = 256 * MinBlockSizeInBytes;
         public const int DefaultAllocationBlockSizeInBytes = 1 * MinBlockSizeInBytes;
         public const int MinReusableBlockSizeInBytes = 8;
@@ -634,7 +667,8 @@ namespace Sparrow
             }
         }
 
-        private const int LogMinBlockSize = 16;
+        // Log₂(MinBlockSizeInBytes)
+        private const int LogMinBlockSize = 12;
 
         /// <summary>
         /// This list keeps all the segments already instantiated in order to release them after context finalization. 
@@ -689,9 +723,6 @@ namespace Sparrow
             if (_disposed)
                 ThrowObjectDisposed();
 
-            if (_wholeSegments.Count == 2)
-                return; // nothing to do
-
             Array.Clear(_internalReusableStringPoolCount, 0, _internalReusableStringPoolCount.Length);
             foreach (var stack in _internalReusableStringPool)
             {
@@ -703,20 +734,33 @@ namespace Sparrow
             _externalFastPoolCount = 0;
             _externalCurrentLeft = (int)(_externalCurrent.End - _externalCurrent.Start) / _externalAlignedSize;
 
+            Debug.Assert(_wholeSegments.Count >= 2);
+            // We need to make ensure that the _internalCurrent is linked to an unmanaged segment
+            var index = _wholeSegments.Count - 1;
+            if (_wholeSegments[index] == _externalCurrent)
+            {
+                index = _wholeSegments.Count - 2;
+            }
+            _internalCurrent = _wholeSegments[index];
+
+            _internalCurrent.Current = _internalCurrent.Start;
+            _externalCurrent.Current = _externalCurrent.Start; // no need to reset it, always whole section
+
             _currentlyAllocated = 0;
+
+            if (_wholeSegments.Count == 2)
+                return;
 
             for (int i = 0; i < _wholeSegments.Count; i++)
             {
-                if (_wholeSegments[i] == _internalCurrent || _wholeSegments[i] == _externalCurrent)
+                var segment = _wholeSegments[i];
+                if (segment == _internalCurrent || segment == _externalCurrent)
                     continue;
 
-                ReleaseSegment(_wholeSegments[i]);
+                ReleaseSegment(segment);
                 _wholeSegments.RemoveAt(i);
                 i--;
             }
-            _internalCurrent.Current = _internalCurrent.Start;
-            _externalCurrent.Current = _externalCurrent.Start;
-
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -763,7 +807,7 @@ namespace Sparrow
             {
                 if (_externalCurrentLeft == 0)
                 {
-                    var tmp = Math.Min(16 * Constants.Size.Megabyte, _allocationBlockSize * 2);
+                    var tmp = Math.Min(2 * Constants.Size.Megabyte, _allocationBlockSize * 2);
                     AllocateExternalSegment(tmp);
                     _allocationBlockSize = tmp;
                 }
@@ -893,7 +937,7 @@ namespace Sparrow
             }
             else
             {
-                _allocationBlockSize = Math.Min(16 * Constants.Size.Megabyte, _allocationBlockSize * 2);
+                _allocationBlockSize = Math.Min(2 * Constants.Size.Megabyte, _allocationBlockSize * 2);
                 _internalCurrent = AllocateSegment(_allocationBlockSize);
             }
 
@@ -967,6 +1011,7 @@ namespace Sparrow
 
             var byteString = Create(segment.Current, length, segment.Size, type);
             segment.Current += byteString._pointer->Size;
+            _currentlyAllocated += byteString._pointer->Size;
 
             return byteString;
         }
@@ -1507,6 +1552,8 @@ namespace Sparrow
             }
             catch (ObjectDisposedException)
             {
+                // This is expected, we might be calling the finalizer on an object that
+                // was already disposed, we don't want to error here because of this
             }
         }
 

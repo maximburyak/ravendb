@@ -4,6 +4,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using Raven.Client;
 using Raven.Server.Utils;
+using Sparrow.Utils;
 
 namespace Raven.Server.Web.System
 {
@@ -35,18 +36,22 @@ namespace Raven.Server.Web.System
             "clock$"
         };
 
-        // from https://github.com/dotnet/corefx/blob/9c06da6a34fcefa6fb37776ac57b80730e37387c/src/Common/src/System/IO/PathInternal.Windows.cs#L52
-        public static readonly int WindowsMaxPath = short.MaxValue;
+        public static readonly int WindowsMaxPath = DiskSpaceChecker.WindowsMaxPath;
 
         public const int LinuxMaxFileNameLength = 230;
 
-        public const int LinuxMaxPath = 4096;
+        public const int LinuxMaxPath = DiskSpaceChecker.LinuxMaxPath;
 
         public static bool IsValidResourceName(string name, string dataDirectory, out string errorMessage)
         {
             if (string.IsNullOrWhiteSpace(name))
             {
                 errorMessage = "An empty name is forbidden for use!";
+                return false;
+            }
+            if (NameUtils.IsValidResourceName(name) == false)
+            {
+                errorMessage = $"The name '{name}' is not permitted. Only letters, digits and characters ('_', '.', '-') are allowed.";
                 return false;
             }
             if (name.Length > Constants.Documents.MaxDatabaseNameLength)
@@ -61,14 +66,11 @@ namespace Raven.Server.Web.System
             }
             if (WindowsReservedFileNames.Any(x => string.Equals(x, name, StringComparison.OrdinalIgnoreCase)))
             {
-                errorMessage = string.Format($"The name '{name}' is forbidden for use!");
+                errorMessage = $"The name '{name}' is forbidden for use!";
                 return false;
             }
-            if (NameUtils.IsValidResourceName(name) == false)
-            {
-                errorMessage = string.Format($"The name '{name}' does not match '{NameUtils.ValidResourceNameCharacters}' regular expression!");
-                return false;
-            }
+
+            dataDirectory = dataDirectory ?? string.Empty;
             if (Path.Combine(dataDirectory, name).Length > WindowsMaxPath)
             {
                 int maxfileNameLength = WindowsMaxPath - dataDirectory.Length;

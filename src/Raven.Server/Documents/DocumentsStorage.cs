@@ -89,20 +89,22 @@ namespace Raven.Server.Documents
 
         static DocumentsStorage()
         {
-            Slice.From(StorageEnvironment.LabelsContext, "AllTombstonesEtags", ByteStringType.Immutable, out AllTombstonesEtagsSlice);
-            Slice.From(StorageEnvironment.LabelsContext, "Etags", ByteStringType.Immutable, out EtagsSlice);
-            Slice.From(StorageEnvironment.LabelsContext, "LastEtag", ByteStringType.Immutable, out LastEtagSlice);
-            Slice.From(StorageEnvironment.LabelsContext, "Docs", ByteStringType.Immutable, out DocsSlice);
-            Slice.From(StorageEnvironment.LabelsContext, "CollectionEtags", ByteStringType.Immutable, out CollectionEtagsSlice);
-            Slice.From(StorageEnvironment.LabelsContext, "AllDocsEtags", ByteStringType.Immutable, out AllDocsEtagsSlice);
-            Slice.From(StorageEnvironment.LabelsContext, "Tombstones", ByteStringType.Immutable, out TombstonesSlice);
-            Slice.From(StorageEnvironment.LabelsContext, "Collections", ByteStringType.Immutable, out CollectionsSlice);
-            Slice.From(StorageEnvironment.LabelsContext, CollectionName.GetTablePrefix(CollectionTableType.Tombstones), ByteStringType.Immutable, out TombstonesPrefix);
-            Slice.From(StorageEnvironment.LabelsContext, "DeletedEtags", ByteStringType.Immutable, out DeletedEtagsSlice);
-            Slice.From(StorageEnvironment.LabelsContext, "LastReplicatedEtags", ByteStringType.Immutable, out LastReplicatedEtagsSlice);
-            Slice.From(StorageEnvironment.LabelsContext, "GlobalTree", ByteStringType.Immutable, out GlobalTreeSlice);
-            Slice.From(StorageEnvironment.LabelsContext, "GlobalChangeVector", ByteStringType.Immutable, out GlobalChangeVectorSlice);
-
+            using (StorageEnvironment.GetStaticContext(out var ctx))
+            {
+                Slice.From(ctx, "AllTombstonesEtags", ByteStringType.Immutable, out AllTombstonesEtagsSlice);
+                Slice.From(ctx, "Etags", ByteStringType.Immutable, out EtagsSlice);
+                Slice.From(ctx, "LastEtag", ByteStringType.Immutable, out LastEtagSlice);
+                Slice.From(ctx, "Docs", ByteStringType.Immutable, out DocsSlice);
+                Slice.From(ctx, "CollectionEtags", ByteStringType.Immutable, out CollectionEtagsSlice);
+                Slice.From(ctx, "AllDocsEtags", ByteStringType.Immutable, out AllDocsEtagsSlice);
+                Slice.From(ctx, "Tombstones", ByteStringType.Immutable, out TombstonesSlice);
+                Slice.From(ctx, "Collections", ByteStringType.Immutable, out CollectionsSlice);
+                Slice.From(ctx, CollectionName.GetTablePrefix(CollectionTableType.Tombstones), ByteStringType.Immutable, out TombstonesPrefix);
+                Slice.From(ctx, "DeletedEtags", ByteStringType.Immutable, out DeletedEtagsSlice);
+                Slice.From(ctx, "LastReplicatedEtags", ByteStringType.Immutable, out LastReplicatedEtagsSlice);
+                Slice.From(ctx, "GlobalTree", ByteStringType.Immutable, out GlobalTreeSlice);
+                Slice.From(ctx, "GlobalChangeVector", ByteStringType.Immutable, out GlobalChangeVectorSlice);
+            }
             /*
             Collection schema is:
             full name
@@ -662,7 +664,7 @@ namespace Raven.Server.Documents
         public struct DocumentOrTombstone
         {
             public Document Document;
-            public DocumentTombstone Tombstone;
+            public Tombstone Tombstone;
             public bool Missing => Document == null && Tombstone == null;
         }
 
@@ -732,7 +734,7 @@ namespace Raven.Server.Documents
             return TableValueToDocument(context, ref tvr);
         }
 
-        public DocumentTombstone GetTombstoneByEtag(DocumentsOperationContext context, long etag)
+        public Tombstone GetTombstoneByEtag(DocumentsOperationContext context, long etag)
         {
             var table = new Table(TombstonesSchema, context.Transaction.InnerTransaction);
             var index = TombstonesSchema.FixedSizeIndexes[AllTombstonesEtagsSlice];
@@ -806,7 +808,7 @@ namespace Raven.Server.Documents
             return false;
         }
 
-        public IEnumerable<DocumentTombstone> GetTombstonesFrom(DocumentsOperationContext context, long etag, int start, int take)
+        public IEnumerable<Tombstone> GetTombstonesFrom(DocumentsOperationContext context, long etag, int start, int take)
         {
             var table = new Table(TombstonesSchema, context.Transaction.InnerTransaction);
 
@@ -820,7 +822,7 @@ namespace Raven.Server.Documents
             }
         }
 
-        public IEnumerable<DocumentTombstone> GetTombstonesFrom(DocumentsOperationContext context, List<string> collections, long etag, int take)
+        public IEnumerable<Tombstone> GetTombstonesFrom(DocumentsOperationContext context, List<string> collections, long etag, int take)
         {
             foreach (var collection in collections)
             {
@@ -848,19 +850,30 @@ namespace Raven.Server.Documents
             }
         }
 
-        public IEnumerable<DocumentTombstone> GetTombstonesFrom(
+        public IEnumerable<Tombstone> GetTombstonesFrom(
             DocumentsOperationContext context,
             string collection,
             long etag,
             int start,
             int take)
         {
-            var collectionName = GetCollection(collection, throwIfDoesNotExist: false);
-            if (collectionName == null)
-                yield break;
+            string tableName;
 
-            var table = context.Transaction.InnerTransaction.OpenTable(TombstonesSchema,
-                collectionName.GetTableName(CollectionTableType.Tombstones));
+            if (collection == AttachmentsStorage.AttachmentsTombstones ||
+                collection == RevisionsStorage.RevisionsTombstones)
+            {
+                tableName = collection;
+            }
+            else
+            {
+                var collectionName = GetCollection(collection, throwIfDoesNotExist: false);
+                if (collectionName == null)
+                    yield break;
+
+                tableName = collectionName.GetTableName(CollectionTableType.Tombstones);
+            }
+
+            var table = context.Transaction.InnerTransaction.OpenTable(TombstonesSchema, tableName);
 
             if (table == null)
                 yield break;
@@ -934,7 +947,7 @@ namespace Raven.Server.Documents
             return TableValueToEtag(1, ref result.Reader);
         }
 
-        public bool HasTombstonesWithDocumentEtagBetween(DocumentsOperationContext context, string collection,
+        public bool HasTombstonesWithEtagGreaterThanStartAndLowerThanOrEqualToEnd(DocumentsOperationContext context, string collection,
             long start,
             long end)
         {
@@ -951,7 +964,7 @@ namespace Raven.Server.Documents
             if (table == null)
                 return false;
 
-            return table.HasEntriesBetween(TombstonesSchema.FixedSizeIndexes[DeletedEtagsSlice], start, end);
+            return table.HasEntriesGreaterThanStartAndLowerThanOrEqualToEnd(TombstonesSchema.FixedSizeIndexes[CollectionEtagsSlice], start, end);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1006,29 +1019,29 @@ namespace Raven.Server.Documents
             return ParseDocument(context, ref tvr);
         }
 
-        private static DocumentTombstone TableValueToTombstone(JsonOperationContext context, ref TableValueReader tvr)
+        private static Tombstone TableValueToTombstone(JsonOperationContext context, ref TableValueReader tvr)
         {
             if (tvr.Pointer == null)
                 return null;
 
-            var result = new DocumentTombstone
+            var result = new Tombstone
             {
                 StorageId = tvr.Id,
                 LowerId = TableValueToString(context, (int)TombstoneTable.LowerId, ref tvr),
                 Etag = TableValueToEtag((int)TombstoneTable.Etag, ref tvr),
                 DeletedEtag = TableValueToEtag((int)TombstoneTable.DeletedEtag, ref tvr),
-                Type = *(DocumentTombstone.TombstoneType*)tvr.Read((int)TombstoneTable.Type, out int _),
+                Type = *(Tombstone.TombstoneType*)tvr.Read((int)TombstoneTable.Type, out int _),
                 TransactionMarker = *(short*)tvr.Read((int)TombstoneTable.TransactionMarker, out int _),
                 ChangeVector = TableValueToChangeVector(context, (int)TombstoneTable.ChangeVector, ref tvr)
             };
 
-            if (result.Type == DocumentTombstone.TombstoneType.Document)
+            if (result.Type == Tombstone.TombstoneType.Document)
             {
                 result.Collection = TableValueToId(context, (int)TombstoneTable.Collection, ref tvr);
                 result.Flags = TableValueToFlags((int)TombstoneTable.Flags, ref tvr);
                 result.LastModified = TableValueToDateTime((int)TombstoneTable.LastModified, ref tvr);
             }
-            else if (result.Type == DocumentTombstone.TombstoneType.Revision)
+            else if (result.Type == Tombstone.TombstoneType.Revision)
             {
                 result.Collection = TableValueToId(context, (int)TombstoneTable.Collection, ref tvr);
             }
@@ -1093,7 +1106,9 @@ namespace Raven.Server.Documents
                     local.Tombstone.ChangeVector,
                     modifiedTicks,
                     changeVector,
-                    local.Tombstone.Flags | documentFlags).Etag;
+                    flags, 
+                    nonPersistentFlags).Etag;
+
 
                 EnsureLastEtagIsPersisted(context, etag);
 
@@ -1140,11 +1155,20 @@ namespace Raven.Server.Documents
                 var flags = TableValueToFlags((int)DocumentsTable.Flags, ref tvr) | documentFlags;
 
                 long etag;
-                using (TableValueToSlice(context, (int)DocumentsTable.LowerId, ref tvr, out Slice tombstone))
+                using (TableValueToSlice(context, (int)DocumentsTable.LowerId, ref tvr, out Slice tombstoneId))
                 {
-                    var tombstoneEtag = CreateTombstone(context, tombstone, doc.Etag, collectionName, doc.ChangeVector, modifiedTicks, changeVector, doc.Flags);
-                    changeVector = tombstoneEtag.ChangeVector;
-                    etag = tombstoneEtag.Etag;
+                    var tombstone = CreateTombstone(
+                        context, 
+                        tombstoneId, 
+                        doc.Etag, 
+                        collectionName, 
+                        doc.ChangeVector, 
+                        modifiedTicks, 
+                        changeVector, 
+                        flags, 
+                        nonPersistentFlags);
+                    changeVector = tombstone.ChangeVector;
+                    etag = tombstone.Etag;
                 }
 
                 EnsureLastEtagIsPersisted(context, etag);
@@ -1200,10 +1224,11 @@ namespace Raven.Server.Documents
                     lowerId,
                     GenerateNextEtagForReplicatedTombstoneMissingDocument(context),
                     collectionName,
-                    changeVector,
-                    DateTime.UtcNow.Ticks,
                     null,
-                    documentFlags).Etag;
+                    DateTime.UtcNow.Ticks,
+                    changeVector,
+                    documentFlags,
+                    nonPersistentFlags).Etag;
 
                 return new DeleteOperationResult
                 {
@@ -1227,7 +1252,7 @@ namespace Raven.Server.Documents
 
         public long GenerateNextEtagForReplicatedTombstoneMissingDocument(DocumentsOperationContext context)
         {
-            // DocumentTombstone.DeleteEtag is not relevant, but we need a unique one here
+            // Tombstone.DeleteEtag is not relevant, but we need a unique one here
             // we use a negative value here to indicate a missing replicated tombstone
             var newEtag = GenerateNextEtag();
             EnsureLastEtagIsPersisted(context, newEtag);
@@ -1288,19 +1313,20 @@ namespace Raven.Server.Documents
                 etagTree.Add(LastEtagSlice, etagSlice);
         }
 
-        public (long Etag, string ChangeVector) CreateTombstone(
-            DocumentsOperationContext context,
+        public (long Etag, string ChangeVector) CreateTombstone(DocumentsOperationContext context,
             Slice lowerId,
             long documentEtag,
             CollectionName collectionName,
             string docChangeVector,
             long lastModifiedTicks,
             string changeVector,
-            DocumentFlags flags)
+            DocumentFlags flags, 
+            NonPersistentDocumentFlags nonPersistentFlags)
         {
             var newEtag = GenerateNextEtag();
 
-            if (string.IsNullOrEmpty(changeVector))
+            if (string.IsNullOrEmpty(changeVector) && 
+                nonPersistentFlags.Contain(NonPersistentDocumentFlags.FromReplication) == false)
             {
                 changeVector = ConflictsStorage.GetMergedConflictChangeVectorsAndDeleteConflicts(
                     context,
@@ -1320,22 +1346,49 @@ namespace Raven.Server.Documents
 
             var table = context.Transaction.InnerTransaction.OpenTable(TombstonesSchema,
                 collectionName.GetTableName(CollectionTableType.Tombstones));
-            using (DocumentIdWorker.GetStringPreserveCase(context, collectionName.Name, out Slice collectionSlice))
-            using (Slice.From(context.Allocator, changeVector, out var cv))
-            using (table.Allocate(out TableValueBuilder tvb))
+
+            try
             {
-                tvb.Add(lowerId);
-                tvb.Add(Bits.SwapBytes(newEtag));
-                tvb.Add(Bits.SwapBytes(documentEtag));
-                tvb.Add(context.GetTransactionMarker());
-                tvb.Add((byte)DocumentTombstone.TombstoneType.Document);
-                tvb.Add(collectionSlice);
-                tvb.Add((int)flags);
-                tvb.Add(cv.Content.Ptr, cv.Size);
-                tvb.Add(lastModifiedTicks);
-                table.Insert(tvb);
+                using (DocumentIdWorker.GetStringPreserveCase(context, collectionName.Name, out Slice collectionSlice))
+                using (Slice.From(context.Allocator, changeVector, out var cv))
+                using (table.Allocate(out TableValueBuilder tvb))
+                {
+                    tvb.Add(lowerId);
+                    tvb.Add(Bits.SwapBytes(newEtag));
+                    tvb.Add(Bits.SwapBytes(documentEtag));
+                    tvb.Add(context.GetTransactionMarker());
+                    tvb.Add((byte)Tombstone.TombstoneType.Document);
+                    tvb.Add(collectionSlice);
+                    tvb.Add((int)flags);
+                    tvb.Add(cv.Content.Ptr, cv.Size);
+                    tvb.Add(lastModifiedTicks);
+                    table.Insert(tvb);
+                }
             }
+            catch (VoronConcurrencyErrorException e)
+            {
+                var tombstoneTable = new Table(TombstonesSchema, context.Transaction.InnerTransaction);
+                if (tombstoneTable.ReadByKey(lowerId, out var tvr))
+                {
+                    var tombstoneCollection = TableValueToId(context, (int)TombstoneTable.Collection, ref tvr);
+                    var tombstoneCollectionName = ExtractCollectionName(context, tombstoneCollection);
+
+                    if (tombstoneCollectionName != collectionName)
+                        ThrowNotSupportedExceptionForCreatingTombstoneWhenItExistsForDifferentCollection(lowerId, collectionName, tombstoneCollectionName, e);
+                }
+
+                throw;
+            }
+
             return (newEtag, changeVector);
+        }
+
+        private static void ThrowNotSupportedExceptionForCreatingTombstoneWhenItExistsForDifferentCollection(Slice lowerId, CollectionName collectionName,
+            CollectionName tombstoneCollectionName, VoronConcurrencyErrorException e)
+        {
+            throw new NotSupportedException(
+                $"Could not delete document '{lowerId}' from collection '{collectionName.Name}' because tombstone for that document but different collection ('{tombstoneCollectionName.Name}') already exists. Did you change the documents collection recently? If yes, please give some time for other system components (e.g. Indexing, Replication, Backup) to process that change.",
+                e);
         }
 
         public struct PutOperationResults

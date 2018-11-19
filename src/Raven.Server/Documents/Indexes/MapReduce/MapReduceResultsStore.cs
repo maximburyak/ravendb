@@ -7,6 +7,7 @@ using Sparrow.Json;
 using Voron;
 using Voron.Data.BTrees;
 using Voron.Impl;
+using Voron.Util;
 
 namespace Raven.Server.Documents.Indexes.MapReduce
 {
@@ -60,13 +61,15 @@ namespace Raven.Server.Documents.Indexes.MapReduce
             ModifiedPages = new HashSet<long>();
             FreedPages = new HashSet<long>();
 
+            _mapReduceContext.PageModifiedInReduceTree += page => FreedPages.Remove(page);
+
             Tree.PageModified += (page, flags) =>
             {
                 if ((flags & PageFlags.Overflow) == PageFlags.Overflow)
                     return;
 
                 ModifiedPages.Add(page);
-                FreedPages.Remove(page);
+                _mapReduceContext.OnPageModifiedInReduceTree(page);
             };
 
             Tree.PageFreed += (page, flags) =>
@@ -146,12 +149,20 @@ namespace Raven.Server.Documents.Indexes.MapReduce
                     Slice entrySlice;
                     using (Slice.External(_indexContext.Allocator, (byte*)&id, sizeof(long), out entrySlice))
                     {
-                        var read = Tree.ReadDecompressed(entrySlice);
-
-                        if (read == null)
-                            throw new InvalidOperationException($"Could not find a map result with id '{id}' in '{Tree.Name}' tree");
-
-                        return new ReadMapEntryScope(read);
+                        if (Tree.IsLeafCompressionSupported)
+                        {
+                            var read = Tree.ReadDecompressed(entrySlice);
+                            if (read == null)
+                                throw new InvalidOperationException($"Could not find a map result with id '{id}' in '{Tree.Name}' tree");
+                            return new ReadMapEntryScope(read);
+                        }
+                        else
+                        {
+                            var read = Tree.Read(entrySlice);
+                            if (read == null)
+                                throw new InvalidOperationException($"Could not find a map result with id '{id}' in '{Tree.Name}' tree");
+                            return new ReadMapEntryScope(PtrSize.Create(read.Reader.Base, read.Reader.Length));
+                        }
                     }
                 case MapResultsStorageType.Nested:
                     var section = GetNestedResultsSection();

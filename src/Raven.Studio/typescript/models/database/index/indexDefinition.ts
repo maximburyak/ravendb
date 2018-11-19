@@ -1,8 +1,9 @@
 /// <reference path="../../../../typings/tsd.d.ts"/>
-
 import indexFieldOptions = require("models/database/index/indexFieldOptions");
 import additionalSource = require("models/database/index/additionalSource");
 import configurationItem = require("models/database/index/configurationItem");
+import validateNameCommand = require("commands/resources/validateNameCommand");
+import generalUtils = require("common/generalUtils");
 
 class mapItem {
     map = ko.observable<string>();
@@ -29,6 +30,7 @@ class mapItem {
 class indexDefinition {
    
     name = ko.observable<string>();
+    
     maps = ko.observableArray<mapItem>();
     reduce = ko.observable<string>();
     //isTestIndex = ko.observable<boolean>(false);
@@ -64,6 +66,7 @@ class indexDefinition {
         this.outputReduceToCollection(!!dto.OutputReduceToCollection);
         this.reduceToCollectionName(dto.OutputReduceToCollection);
         this.fields(_.map(dto.Fields, (fieldDto, indexName) => new indexFieldOptions(indexName, fieldDto, indexFieldOptions.defaultFieldOptions())));
+        
         const defaultFieldOptions = this.fields().find(x => x.name() === indexFieldOptions.DefaultFieldOptions);
         if (defaultFieldOptions) {
             this.defaultFieldOptions(defaultFieldOptions);
@@ -82,17 +85,31 @@ class indexDefinition {
         
         if (!this.isAutoIndex()) {
             this.initValidation();
-        } 
-    }
+        }
+    } 
     
-    private initValidation() {
-        const rg1 = /^[^\\]*$/; // forbidden character - backslash
+    private initValidation() {        
+        
+        const checkIndexName = (val: string,
+                                params: any,
+                                callback: (currentValue: string, errorMessageOrValidationResult: string | boolean) => void) => {
+                                    new validateNameCommand('Index', val)
+                                        .execute()
+                                        .done((result) => {
+                                            if (result.IsValid) {
+                                                callback(this.name(), true);
+                                            } else {
+                                                callback(this.name(), result.ErrorMessage);
+                                            }
+                                        })
+                               };
+        
         this.name.extend({
             required: true,
             validation: [
                 {
-                    validator: (val: string) => rg1.test(val),
-                    message: "Can't use backslash in index name."
+                    async: true,
+                    validator: generalUtils.debounceAndFunnel(checkIndexName)
                 }]
         });
 

@@ -1,8 +1,8 @@
-﻿using System;
-using System.IO;
+﻿using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using FastTests.Server.Documents.Revisions;
+using FastTests.Utils;
 using Raven.Client;
 using Raven.Client.Documents.Indexes;
 using Raven.Client.Documents.Subscriptions;
@@ -24,7 +24,11 @@ namespace FastTests.Voron.Backups
             using (CreatePersistentDocumentDatabase(NewDataPath(), out var database))
             {
                 var context = DocumentsOperationContext.ShortTermSingleUse(database);
-                await RevisionsHelper.SetupRevisions(Server.ServerStore, database.Name, false, 13);
+                await RevisionsHelper.SetupRevisions(Server.ServerStore, database.Name, modifyConfiguration: configuration =>
+                {
+                    configuration.Collections["Users"].PurgeOnDelete = false;
+                    configuration.Collections["Users"].MinimumRevisionsToKeep = 13;
+                });
 
                 await database.SubscriptionStorage.PutSubscription(new SubscriptionCreationOptions
                 {

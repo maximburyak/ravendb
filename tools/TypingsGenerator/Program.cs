@@ -51,6 +51,7 @@ using Raven.Server.Web.System;
 using Raven.Server.NotificationCenter.Notifications;
 using Raven.Server.NotificationCenter.Notifications.Details;
 using Raven.Server.NotificationCenter.Notifications.Server;
+using Raven.Server.ServerWide.BackgroundTasks;
 using Raven.Server.ServerWide.Maintenance;
 using Raven.Server.Smuggler.Documents.Data;
 using Raven.Server.Smuggler.Migration;
@@ -123,16 +124,21 @@ namespace TypingsGenerator
 
             scripter.UsingTypeFilter(type => ignoredTypes.Contains(type) == false);
             scripter.UsingTypeReader(new TypeReaderWithIgnoreMethods());
+            
             scripter.AddType(typeof(CollectionStatistics));
-
             scripter.AddType(typeof(BatchRequestParser.CommandData));
+            
+            // name validation
+            scripter.AddType(typeof(StudioTasksHandler.ItemType));
+            scripter.AddType(typeof(NameValidation));
 
+            // database
             scripter.AddType(typeof(DatabasePutResult));
             scripter.AddType(typeof(DatabaseRecord));
             scripter.AddType(typeof(DatabaseStatistics));
+            
+            // footer
             scripter.AddType(typeof(FooterStatistics));
-            scripter.AddType(typeof(IndexDefinition));
-            scripter.AddType(typeof(PutIndexResult));
 
             // attachments
             scripter.AddType(typeof(AttachmentName));
@@ -171,8 +177,11 @@ namespace TypingsGenerator
             // alerts
             scripter.AddType(typeof(EtlErrorsDetails));
             scripter.AddType(typeof(SlowSqlDetails));
+            scripter.AddType(typeof(SlowWritesDetails));
 
             // indexes
+            scripter.AddType(typeof(IndexDefinition));
+            scripter.AddType(typeof(PutIndexResult));
             scripter.AddType(typeof(IndexStats));
             scripter.AddType(typeof(IndexingStatus));
             scripter.AddType(typeof(IndexPerformanceStats));
@@ -282,7 +291,7 @@ namespace TypingsGenerator
             scripter.AddType(typeof(NextBackupOccurrence));
             scripter.AddType(typeof(OfflineMigrationConfiguration));
             scripter.AddType(typeof(BackupProgress));
-            scripter.AddType(typeof(BackupDatabaseNowResult));
+            scripter.AddType(typeof(StartBackupOperationResult));
 
             // ongoing tasks - subscription
             scripter.AddType(typeof(OngoingTaskSubscription));
@@ -361,6 +370,9 @@ namespace TypingsGenerator
             // debug
             scripter.AddType(typeof(ThreadsHandler.ThreadInfo));
             scripter.AddType(typeof(MemoryStatsHandler.MemoryInfo));
+
+            // version info
+            scripter.AddType(typeof(LatestVersionCheck.VersionInfo));
 
             return scripter;
         }

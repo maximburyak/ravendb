@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Linq;
 using System.Net.Http;
 using Raven.Client.Documents.Conventions;
 using Raven.Client.Documents.Indexes;
@@ -23,6 +24,8 @@ namespace Raven.Client.Documents.Operations.Indexes
                 IndexNames = new[] { indexName },
                 Mode = mode
             };
+            
+            FilterAutoIndexes();
         }
 
         public SetIndexesLockOperation(Parameters parameters)
@@ -34,6 +37,17 @@ namespace Raven.Client.Documents.Operations.Indexes
                 throw new ArgumentNullException(nameof(parameters.IndexNames));
 
             _parameters = parameters;
+
+            FilterAutoIndexes();
+        }
+
+        private void FilterAutoIndexes()
+        {
+            // Check for auto-indexes - we do not set lock for auto-indexes
+            if (_parameters.IndexNames.Any(indexName => indexName.StartsWith("Auto/", StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new InvalidOperationException("'Indexes list contains Auto-Indexes. Lock Mode' is not set for Auto-Indexes.");
+            }
         }
 
         public RavenCommand GetCommand(DocumentConventions conventions, JsonOperationContext context)

@@ -6,6 +6,7 @@ using Raven.Server.ServerWide.Context;
 using Raven.Client.Exceptions;
 using Raven.Client.Http;
 using Raven.Client.ServerWide;
+using Raven.Server.ServerWide;
 using Sparrow.Threading;
 using Raven.Server.Utils;
 
@@ -54,7 +55,8 @@ namespace Raven.Server.Rachis
                     if (clusterTopology.Members.Count == 1)
                     {
                         CastVoteForSelf(ElectionTerm + 1, "Single member cluster, natural leader");
-                        _engine.SwitchToLeaderState(ElectionTerm, "I'm the only one in the cluster, so no need for elections, I rule.");
+                        _engine.SwitchToLeaderState(ElectionTerm, ClusterCommandsVersionManager.CurrentClusterMinimalVersion,
+                            "I'm the only one in the cluster, so no need for elections, I rule.");
                         return;
                     }
 
@@ -71,8 +73,7 @@ namespace Raven.Server.Rachis
                     {
                         if (voter.Key == _engine.Tag)
                             continue; // we already voted for ourselves
-                        var candidateAmbassador = new CandidateAmbassador(_engine, this, voter.Key, voter.Value,
-                            _engine.ClusterCertificate);
+                        var candidateAmbassador = new CandidateAmbassador(_engine, this, voter.Key, voter.Value);
                         _voters.Add(candidateAmbassador);
                         try
                         {
@@ -92,17 +93,7 @@ namespace Raven.Server.Rachis
                     {
                         if (_peersWaiting.WaitOne(_engine.Timeout.TimeoutPeriod) == false)
                         {
-                            ElectionTerm = _engine.CurrentTerm;
-
-                            // timeout? 
-                            if (IsForcedElection)
-                            {
-                                CastVoteForSelf(ElectionTerm + 1, "Timeout during forced elections");
-                            }
-                            else
-                            {
-                                ElectionTerm = ElectionTerm + 1;
-                            }
+                            ElectionTerm = _engine.CurrentTerm + 1;
                             _engine.RandomizeTimeout(extend: true);
 
                             StateChange(); // will wake ambassadors and make them ping peers again
@@ -147,15 +138,31 @@ namespace Raven.Server.Rachis
                         {
                             ElectionResult = ElectionResult.Won;
                             _running.Lower();
-                            StateChange();
 
                             var connections = new Dictionary<string, RemoteConnection>();
+                            var versions = new List<int>
+                            {
+                                ClusterCommandsVersionManager.MyCommandsVersion
+                            };
+
                             foreach (var candidateAmbassador in _voters)
                             {
-                                connections[candidateAmbassador.Tag] = candidateAmbassador.Connection;
-                            }
-                            _engine.SwitchToLeaderState(ElectionTerm, $"Was elected by {realElectionsCount} nodes to leadership in {ElectionTerm}", connections);
+                                if (candidateAmbassador.ClusterCommandsVersion > 0)
+                                {
+                                    versions.Add(candidateAmbassador.ClusterCommandsVersion);
+                                }
 
+                                if (candidateAmbassador.TryGetPublishedConnection(out var connection))
+                                {
+                                    connections[candidateAmbassador.Tag] = connection;
+                                }
+                            }
+                            StateChange();
+
+                            var minimalVersion = ClusterCommandsVersionManager.GetClusterMinimalVersion(versions, _engine.MaximalVersion);
+                            string msg = $"Was elected by {realElectionsCount} nodes for leadership in term {ElectionTerm} with cluster version of {minimalVersion}";
+
+                            _engine.SwitchToLeaderState(ElectionTerm, minimalVersion, msg, connections);
                             break;
                         }
                         if (RunRealElectionAtTerm != ElectionTerm &&
@@ -174,7 +181,7 @@ namespace Raven.Server.Rachis
                     if (_engine.CurrentState == RachisState.Candidate)
                     {
                         // if we are still a candidate, start the candidacy again.
-                        _engine.SwitchToCandidateState("An error occured during the last candidacy: " + e);
+                        _engine.SwitchToCandidateState("An error occurred during the last candidacy: " + e);
                     }
                     else if (_engine.CurrentState != RachisState.Passive)
                     {
@@ -195,7 +202,7 @@ namespace Raven.Server.Rachis
             }
         }
 
-        private void CastVoteForSelf(long electionTerm, string reason)
+        private void CastVoteForSelf(long electionTerm, string reason, bool setStateChange = true)
         {
             using (_engine.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
             using (var tx = context.OpenWriteTransaction())
@@ -210,7 +217,9 @@ namespace Raven.Server.Rachis
             {
                 _engine.Log.Info($"Candidate {_engine.Tag}: casting vote for self ElectionTerm={electionTerm} RunRealElectionAtTerm={RunRealElectionAtTerm}");
             }
-            StateChange();
+
+            if (setStateChange)
+                StateChange();
         }
 
         public bool IsForcedElection { get; set; }

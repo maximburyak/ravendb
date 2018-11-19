@@ -20,12 +20,22 @@ namespace Raven.Server.Documents.Indexes.MapReduce
         public Dictionary<ulong, MapReduceResultsStore> StoreByReduceKeyHash = new Dictionary<ulong, MapReduceResultsStore>(NumericEqualityComparer.BoxedInstanceUInt64);
         public Dictionary<string, long> ProcessedDocEtags = new Dictionary<string, long>();
         public Dictionary<string, long> ProcessedTombstoneEtags = new Dictionary<string, long>();
-        
+
+        public event Action<long> PageModifiedInReduceTree;
+
+        public void OnPageModifiedInReduceTree(long page)
+        {
+            PageModifiedInReduceTree?.Invoke(page);
+        }
+
         public long NextMapResultId;
 
         static MapReduceIndexingContext()
         {
-             Slice.From(StorageEnvironment.LabelsContext, "__raven/map-reduce/#next-map-result-id", ByteStringType.Immutable, out LastMapResultIdKey);
+            using (StorageEnvironment.GetStaticContext(out var ctx))
+            {
+                Slice.From(ctx, "__raven/map-reduce/#next-map-result-id", ByteStringType.Immutable, out LastMapResultIdKey);
+            }
         }
 
         public void Dispose()
@@ -35,6 +45,7 @@ namespace Raven.Server.Documents.Indexes.MapReduce
             DocumentMapEntries = null;
             MapPhaseTree = null;
             ReducePhaseTree = null;
+            PageModifiedInReduceTree = null;
             ProcessedDocEtags.Clear();
             ProcessedTombstoneEtags.Clear();
             StoreByReduceKeyHash.Clear();

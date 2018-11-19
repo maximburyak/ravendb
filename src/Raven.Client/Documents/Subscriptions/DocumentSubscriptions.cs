@@ -104,7 +104,7 @@ namespace Raven.Client.Documents.Subscriptions
                 else
                     criteria.Query = "from " + collectionName;
                 criteria.Query += " as doc";
-            }
+            }            
             if (predicate != null)
             {
                 var script = predicate.CompileToJavascript(
@@ -113,13 +113,15 @@ namespace Raven.Client.Documents.Subscriptions
                         JavascriptConversionExtensions.MathSupport.Instance,
                         new JavascriptConversionExtensions.DictionarySupport(),
                         JavascriptConversionExtensions.LinqMethodsSupport.Instance,
+                        new JavascriptConversionExtensions.SubscriptionsWrappedConstantSupport(_store.Conventions),
                         new JavascriptConversionExtensions.ConstSupport(_store.Conventions),
                         new JavascriptConversionExtensions.ReplaceParameterWithNewName(predicate.Parameters[0], "this"),
+                        JavascriptConversionExtensions.ToStringSupport.Instance,
                         JavascriptConversionExtensions.DateTimeSupport.Instance,
                         JavascriptConversionExtensions.InvokeSupport.Instance,
                         JavascriptConversionExtensions.NullCoalescingSupport.Instance,
                         JavascriptConversionExtensions.NestedConditionalSupport.Instance,
-                        JavascriptConversionExtensions.StringSupport.Instance
+                        JavascriptConversionExtensions.StringSupport.Instance                        
                     ));
 
                 criteria.Query = $"declare function predicate() {{ return {script} }}{Environment.NewLine}" +
@@ -135,6 +137,7 @@ namespace Raven.Client.Documents.Subscriptions
                         new JavascriptConversionExtensions.DictionarySupport(),
                         JavascriptConversionExtensions.LinqMethodsSupport.Instance,
                         new JavascriptConversionExtensions.ConstSupport(_store.Conventions),
+                        JavascriptConversionExtensions.ToStringSupport.Instance,
                         JavascriptConversionExtensions.DateTimeSupport.Instance,
                         JavascriptConversionExtensions.InvokeSupport.Instance,
                         JavascriptConversionExtensions.NullCoalescingSupport.Instance,
@@ -164,7 +167,7 @@ namespace Raven.Client.Documents.Subscriptions
         /// </summary>
         /// <returns>Created subscription name.</returns>
         public async Task<string> CreateAsync(SubscriptionCreationOptions options, string database = null)
-        {
+        {            
             if (options == null)
                 throw new InvalidOperationException("Cannot create a subscription if options is null");
 
@@ -201,7 +204,7 @@ namespace Raven.Client.Documents.Subscriptions
         /// </summary>
         /// <returns>Subscription object that allows to add/remove subscription handlers.</returns>
         public SubscriptionWorker<dynamic> GetSubscriptionWorker(string subscriptionName, string database = null)
-        {
+        {            
             return GetSubscriptionWorker<dynamic>(new SubscriptionWorkerOptions(subscriptionName), database);
         }
 
@@ -214,6 +217,7 @@ namespace Raven.Client.Documents.Subscriptions
         /// <returns>Subscription object that allows to add/remove subscription handlers.</returns>
         public SubscriptionWorker<T> GetSubscriptionWorker<T>(SubscriptionWorkerOptions options, string database = null) where T : class
         {
+            ((DocumentStoreBase)_store).AssertInitialized();
             if (options == null)
                 throw new InvalidOperationException("Cannot open a subscription if options are null");
 
@@ -257,6 +261,7 @@ namespace Raven.Client.Documents.Subscriptions
         /// </summary>
         public async Task DeleteAsync(string name, string database = null)
         {
+            (_store as DocumentStoreBase).AssertInitialized();
             JsonOperationContext jsonOperationContext;
             var requestExecutor = _store.GetRequestExecutor(database ?? _store.Database);
             requestExecutor.ContextPool.AllocateOperationContext(out jsonOperationContext);

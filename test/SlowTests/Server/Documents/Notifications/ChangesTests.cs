@@ -7,7 +7,10 @@ using FastTests;
 using Raven.Client.Documents.Changes;
 using Raven.Client.Documents.Indexes;
 using Raven.Client.Documents.Operations;
+using Raven.Client.Exceptions.Database;
 using Raven.Tests.Core.Utils.Entities;
+using Sparrow;
+using Tests.Infrastructure;
 using Xunit;
 
 namespace SlowTests.Server.Documents.Notifications
@@ -148,16 +151,12 @@ namespace SlowTests.Server.Documents.Notifications
         }
 
         [Fact]
-        public void NotificationOnWrongDatabase_ShouldNotCrashServer()
+        public async Task NotificationOnWrongDatabase_ShouldNotCrashServer()
         {
             using (var store = GetDocumentStore())
-            {
-                var mre = new ManualResetEventSlim();
-
-                var taskObservable = store.Changes("does-not-exists");
-                taskObservable.OnError += e => mre.Set();
-
-                Assert.True(mre.Wait(TimeSpan.FromSeconds(15)));
+            {                
+                var taskObservable = store.Changes("does-not-exists");                                
+                Assert.True( await Assert.ThrowsAsync<DatabaseDoesNotExistException>(async () => await taskObservable.EnsureConnectedNow()).WaitAsync(TimeSpan.FromSeconds(15)));                               
 
                 // ensure the db still works
                 store.Maintenance.Send(new GetStatisticsOperation());
@@ -191,6 +190,109 @@ namespace SlowTests.Server.Documents.Notifications
                 Assert.True(list.TryTake(out var indexChange, TimeSpan.FromSeconds(1)));
                 Assert.Equal("Users/All", indexChange.Name);
                 Assert.Equal(IndexChangeTypes.SideBySideReplace, indexChange.Type);
+            }
+        }
+
+        [Fact]
+        public async Task CanGetNotificationAboutDocumentsStartingWith()
+        {
+            using (var store = GetDocumentStore())
+            {
+                var list = new BlockingCollection<DocumentChange>();
+                var taskObservable = store.Changes();
+                await taskObservable.EnsureConnectedNow();
+                var observableWithTask = taskObservable.ForDocumentsStartingWith("users/");
+                
+                observableWithTask.Subscribe(x =>
+                {
+                    if (x.Type == DocumentChangeTypes.Put)
+                        list.Add(x);
+                });
+                await observableWithTask.EnsureSubscribedNow();
+                
+                using (var session = store.OpenSession())
+                {
+                    session.Store(new User(), "users/1");
+                    session.SaveChanges();
+                }
+                
+                using (var session = store.OpenSession())
+                {
+                    session.Store(new User(), "differentDocumentPrefix/1");
+                    session.SaveChanges();
+                }
+                
+                using (var session = store.OpenSession())
+                {
+                    session.Store(new User(), "users/2");
+                    session.SaveChanges();
+                }
+                
+                Assert.True(list.TryTake(out var documentChange, TimeSpan.FromSeconds(1)));
+                Assert.Equal("users/1", documentChange.Id);
+                
+                Assert.True(list.TryTake(out documentChange, TimeSpan.FromSeconds(1)));
+                Assert.Equal("users/2", documentChange.Id);
+            }
+        }
+        
+        [Fact]
+        public async Task CanGetNotificationAboutDocumentsFromCollection()
+        {
+            using (var store = GetDocumentStore())
+            {
+                var list = new BlockingCollection<DocumentChange>();
+                var taskObservable = store.Changes();
+                await taskObservable.EnsureConnectedNow();
+                var observableWithTask = taskObservable.ForDocumentsInCollection("users");
+                
+                observableWithTask.Subscribe(x =>
+                {
+                    if (x.Type == DocumentChangeTypes.Put)
+                        list.Add(x);
+                });
+                await observableWithTask.EnsureSubscribedNow();
+                
+                using (var session = store.OpenSession())
+                {
+                    session.Store(new User(), "users/1");
+                    session.SaveChanges();
+                }
+                
+                using (var session = store.OpenSession())
+                {
+                    session.Store(new Employee(), "employees/1");
+                    session.SaveChanges();
+                }
+                
+                using (var session = store.OpenSession())
+                {
+                    session.Store(new User(), "users/2");
+                    session.SaveChanges();
+                }
+                
+                Assert.True(list.TryTake(out var documentChange, TimeSpan.FromSeconds(1)));
+                Assert.Equal("users/1", documentChange.Id);
+                
+                Assert.True(list.TryTake(out documentChange, TimeSpan.FromSeconds(1)));
+                Assert.Equal("users/2", documentChange.Id);
+            }
+        }
+        
+        [Fact]
+        public async Task CanSubscribeToForDocumentsOfTypeWithoutThrowingExceptionButNothingWillHappen()
+        {
+            using (var store = GetDocumentStore())
+            {
+                var taskObservable = store.Changes();
+                await taskObservable.EnsureConnectedNow();
+
+#pragma warning disable 618
+                var subscription = taskObservable.ForDocumentsOfType<Company>();
+#pragma warning restore 618
+                await subscription.EnsureSubscribedNow();
+
+                subscription.Subscribe(x => { });
             }
         }
 

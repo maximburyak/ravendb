@@ -26,6 +26,7 @@ $ErrorActionPreference = "Stop"
 . '.\scripts\buildProjects.ps1'
 . '.\scripts\getScriptDirectory.ps1'
 . '.\scripts\copyAssets.ps1'
+. '.\scripts\validateAssembly.ps1'
 . '.\scripts\version.ps1'
 . '.\scripts\updateSourceWithBuildInfo.ps1'
 . '.\scripts\nuget.ps1'
@@ -33,6 +34,8 @@ $ErrorActionPreference = "Stop"
 . '.\scripts\help.ps1'
 . '.\scripts\sign.ps1'
 . '.\scripts\docker.ps1'
+. '.\scripts\schemaInfo.ps1'
+. '.\scripts\runtime.ps1'
 
 if ($Help) {
     Help
@@ -112,6 +115,8 @@ $buildNumber = $versionObj.BuildNumber
 $buildType = $versionObj.BuildType.ToLower()
 Write-Host -ForegroundColor Green "Building $version"
 
+SetSchemaInfoInTeamCity $PROJECT_DIR
+
 ValidateClientDependencies $CLIENT_SRC_DIR $SPARROW_SRC_DIR
 UpdateSourceWithBuildInfo $PROJECT_DIR $buildNumber $version
 
@@ -149,7 +154,7 @@ Foreach ($target in $targets) {
     BuildServer $SERVER_SRC_DIR $specOutDir $target $Debug
     BuildTool rvn $RVN_SRC_DIR $specOutDir $target $Debug
     BuildTool drtools $DRTOOL_SRC_DIR $specOutDir $target $Debug
-    
+
     $specOutDirs = @{
         "Main" = $specOutDir;
         "Client" = $CLIENT_OUT_DIR;
@@ -158,6 +163,16 @@ Foreach ($target in $targets) {
         "Studio" = $STUDIO_OUT_DIR;
         "Sparrow" = $SPARROW_OUT_DIR;
         "Drtools" = $([io.path]::combine($specOutDir, "drtools"));
+    }
+
+    if ($target.Name -eq "windows-x64") {
+        Validate-AssemblyVersion $(Join-Path -Path $specOutDirs.Server -ChildPath "Raven.Server.dll" ) $versionObj
+        Validate-AssemblyVersion $(Join-Path -Path $specOutDirs.Server -ChildPath "Sparrow.dll" ) $versionObj
+        Validate-AssemblyVersion $(Join-Path -Path $specOutDirs.Server -ChildPath "Voron.dll" ) $versionObj
+        Validate-AssemblyVersion $(Join-Path -Path $specOutDirs.Rvn -ChildPath "rvn.dll" ) $versionObj
+
+        Validate-AssemblyVersion $(Join-Path -Path $specOutDirs.Client -ChildPath "netstandard2.0/Raven.Client.dll" ) $versionObj
+        Validate-AssemblyVersion $(Join-Path -Path $TESTDRIVER_OUT_DIR -ChildPath "netstandard2.0/Raven.TestDriver.dll" ) $versionObj
     }
 
     $packOpts = @{

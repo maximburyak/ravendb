@@ -1,12 +1,13 @@
 ﻿using Sparrow;
 using Sparrow.Binary;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.CompilerServices;
-using Sparrow.Collections.LockFree;
 using Sparrow.LowMemory;
 using Sparrow.Threading;
+using Voron.Exceptions;
 using Voron.Global;
 using Voron.Impl.Paging;
 
@@ -63,6 +64,14 @@ namespace Voron.Impl.Scratch
                 }
 
                 _scratchBuffers.Clear();
+
+                while (_recycleArea.First != null)
+                {
+                    var recycledScratch = _recycleArea.First.Value;
+
+                    recycledScratch.File.Dispose();
+                    _recycleArea.RemoveFirst();
+                }
             });
 
             _env = env;
@@ -417,7 +426,7 @@ namespace Voron.Impl.Scratch
                 try
                 {
                     using (var tx = _env.NewLowLevelTransaction(new TransactionPersistentContext(),
-                            TransactionFlags.ReadWrite, timeout: TimeSpan.FromMilliseconds(500)))
+                        TransactionFlags.ReadWrite, timeout: TimeSpan.FromMilliseconds(500)))
                     {
                         tx.ModifyPage(0);
                         tx.Commit();
@@ -427,26 +436,45 @@ namespace Voron.Impl.Scratch
                 {
                     break;
                 }
+                catch (DiskFullException)
+                {
+                    break;
+                }
             }
 
             // we need to ensure that no access to _recycleArea and _scratchBuffers will take place in the same time
             // and only methods that access this are used within write transaction
-            using (_env.WriteTransaction())
+            try
             {
-                RemoveInactiveScratches(_current);
-
-                if (_recycleArea.Count == 0)
-                    return;
-
-                while (_recycleArea.First != null)
+                using (_env.WriteTransaction())
                 {
-                    var recycledScratch = _recycleArea.First.Value;
+                    RemoveInactiveScratches(_current);
 
-                    ScratchBufferItem _;
+                    RemoveInactiveRecycledScratches();
+                }
+            }
+            catch (TimeoutException)
+            {
+                
+            }
+        }
+
+        private void RemoveInactiveRecycledScratches()
+        {
+            if (_recycleArea.Count == 0)
+                return;
+            var scratchNode = _recycleArea.First;
+            while (scratchNode != null)
+            {
+                var next = scratchNode.Next;
+                var recycledScratch = scratchNode.Value;
+                if (recycledScratch.File.HasActivelyUsedBytes(_env.PossibleOldestReadTransaction(null)) == false)
+                {
                     _scratchBuffers.TryRemove(recycledScratch.Number, out _);
                     recycledScratch.File.Dispose();
-                    _recycleArea.RemoveFirst();
+                    _recycleArea.Remove(scratchNode);
                 }
+                scratchNode = next;
             }
         }
 

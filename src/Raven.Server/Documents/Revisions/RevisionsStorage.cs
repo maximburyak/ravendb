@@ -47,7 +47,7 @@ namespace Raven.Server.Documents.Revisions
         private readonly DocumentsStorage _documentsStorage;
         public RevisionsConfiguration Configuration { get; private set; }
         public readonly RevisionsOperations Operations;
-        private readonly HashSet<string> _tableCreated = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private HashSet<string> _tableCreated = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly Logger _logger;
 
         public enum RevisionsTable
@@ -68,12 +68,12 @@ namespace Raven.Server.Documents.Revisions
 
             // Field for finding the resolved conflicts
             Resolved = 10,
-            SwappedLastModified = 11, 
+            SwappedLastModified = 11,
         }
 
         public const long NotDeletedRevisionMarker = 0;
 
-        private readonly RevisionsCollectionConfiguration _emptyConfiguration = new RevisionsCollectionConfiguration{ Disabled = true };
+        private readonly RevisionsCollectionConfiguration _emptyConfiguration = new RevisionsCollectionConfiguration { Disabled = true };
 
         public RevisionsStorage(DocumentDatabase database, Transaction tx)
         {
@@ -95,62 +95,82 @@ namespace Raven.Server.Documents.Revisions
         public Table EnsureRevisionTableCreated(Transaction tx, CollectionName collection)
         {
             var tableName = collection.GetTableName(CollectionTableType.Revisions);
-            if (_tableCreated.Add(collection.Name))
+
+            if (_tableCreated.Contains(collection.Name) == false)
+            {
+                // RavenDB-11705: It is possible that this will revert if the transaction
+                // aborts, so we must record this only after the transaction has been committed
+                // note that calling the Create() method multiple times is a noop
                 RevisionsSchema.Create(tx, tableName, 16);
+                tx.LowLevelTransaction.OnDispose += _ =>
+                 {
+                     if (tx.LowLevelTransaction.Committed == false)
+                         return;
+
+                     // not sure if we can _rely_ on the tx write lock here, so let's be safe and create
+                     // a new instance, just in case 
+                     _tableCreated = new HashSet<string>(_tableCreated, StringComparer.OrdinalIgnoreCase)
+                     {
+                         collection.Name
+                     };
+                 };
+            }
             return tx.OpenTable(RevisionsSchema, tableName);
         }
 
         static RevisionsStorage()
         {
-            Slice.From(StorageEnvironment.LabelsContext, "RevisionsChangeVector", ByteStringType.Immutable, out var changeVectorSlice);
-            Slice.From(StorageEnvironment.LabelsContext, "RevisionsIdAndEtag", ByteStringType.Immutable, out IdAndEtagSlice);
-            Slice.From(StorageEnvironment.LabelsContext, "DeleteRevisionEtag", ByteStringType.Immutable, out DeleteRevisionEtagSlice);
-            Slice.From(StorageEnvironment.LabelsContext, "AllRevisionsEtags", ByteStringType.Immutable, out AllRevisionsEtagsSlice);
-            Slice.From(StorageEnvironment.LabelsContext, "CollectionRevisionsEtags", ByteStringType.Immutable, out CollectionRevisionsEtagsSlice);
-            Slice.From(StorageEnvironment.LabelsContext, "RevisionsCount", ByteStringType.Immutable, out RevisionsCountSlice);
-            Slice.From(StorageEnvironment.LabelsContext, nameof(ResolvedFlagByEtagSlice), ByteStringType.Immutable, out ResolvedFlagByEtagSlice);
-            Slice.From(StorageEnvironment.LabelsContext, RevisionsTombstones, ByteStringType.Immutable, out RevisionsTombstonesSlice);
-            Slice.From(StorageEnvironment.LabelsContext, CollectionName.GetTablePrefix(CollectionTableType.Revisions), ByteStringType.Immutable, out RevisionsPrefix);
-
-            RevisionsSchema.DefineKey(new TableSchema.SchemaIndexDef
+            using (StorageEnvironment.GetStaticContext(out var ctx))
             {
-                StartIndex = (int)RevisionsTable.ChangeVector,
-                Count = 1,
-                Name = changeVectorSlice,
-                IsGlobal = true
-            });
-            RevisionsSchema.DefineIndex(new TableSchema.SchemaIndexDef
-            {
-                StartIndex = (int)RevisionsTable.LowerId,
-                Count = 3,
-                Name = IdAndEtagSlice,
-                IsGlobal = true
-            });
-            RevisionsSchema.DefineFixedSizeIndex(new TableSchema.FixedSizeSchemaIndexDef
-            {
-                StartIndex = (int)RevisionsTable.Etag,
-                Name = AllRevisionsEtagsSlice,
-                IsGlobal = true
-            });
-            RevisionsSchema.DefineFixedSizeIndex(new TableSchema.FixedSizeSchemaIndexDef
-            {
-                StartIndex = (int)RevisionsTable.Etag,
-                Name = CollectionRevisionsEtagsSlice
-            });
-            RevisionsSchema.DefineIndex(new TableSchema.SchemaIndexDef
-            {
-                StartIndex = (int)RevisionsTable.DeletedEtag,
-                Count = 1,
-                Name = DeleteRevisionEtagSlice,
-                IsGlobal = true
-            });
-            RevisionsSchema.DefineIndex(new TableSchema.SchemaIndexDef
-            {
-                StartIndex = (int)RevisionsTable.Resolved,
-                Count = 2,
-                Name = ResolvedFlagByEtagSlice,
-                IsGlobal = true
-            });
+                Slice.From(ctx, "RevisionsChangeVector", ByteStringType.Immutable, out var changeVectorSlice);
+                Slice.From(ctx, "RevisionsIdAndEtag", ByteStringType.Immutable, out IdAndEtagSlice);
+                Slice.From(ctx, "DeleteRevisionEtag", ByteStringType.Immutable, out DeleteRevisionEtagSlice);
+                Slice.From(ctx, "AllRevisionsEtags", ByteStringType.Immutable, out AllRevisionsEtagsSlice);
+                Slice.From(ctx, "CollectionRevisionsEtags", ByteStringType.Immutable, out CollectionRevisionsEtagsSlice);
+                Slice.From(ctx, "RevisionsCount", ByteStringType.Immutable, out RevisionsCountSlice);
+                Slice.From(ctx, nameof(ResolvedFlagByEtagSlice), ByteStringType.Immutable, out ResolvedFlagByEtagSlice);
+                Slice.From(ctx, RevisionsTombstones, ByteStringType.Immutable, out RevisionsTombstonesSlice);
+                Slice.From(ctx, CollectionName.GetTablePrefix(CollectionTableType.Revisions), ByteStringType.Immutable, out RevisionsPrefix);
+                RevisionsSchema.DefineKey(new TableSchema.SchemaIndexDef
+                {
+                    StartIndex = (int)RevisionsTable.ChangeVector,
+                    Count = 1,
+                    Name = changeVectorSlice,
+                    IsGlobal = true
+                });
+                RevisionsSchema.DefineIndex(new TableSchema.SchemaIndexDef
+                {
+                    StartIndex = (int)RevisionsTable.LowerId,
+                    Count = 3,
+                    Name = IdAndEtagSlice,
+                    IsGlobal = true
+                });
+                RevisionsSchema.DefineFixedSizeIndex(new TableSchema.FixedSizeSchemaIndexDef
+                {
+                    StartIndex = (int)RevisionsTable.Etag,
+                    Name = AllRevisionsEtagsSlice,
+                    IsGlobal = true
+                });
+                RevisionsSchema.DefineFixedSizeIndex(new TableSchema.FixedSizeSchemaIndexDef
+                {
+                    StartIndex = (int)RevisionsTable.Etag,
+                    Name = CollectionRevisionsEtagsSlice
+                });
+                RevisionsSchema.DefineIndex(new TableSchema.SchemaIndexDef
+                {
+                    StartIndex = (int)RevisionsTable.DeletedEtag,
+                    Count = 1,
+                    Name = DeleteRevisionEtagSlice,
+                    IsGlobal = true
+                });
+                RevisionsSchema.DefineIndex(new TableSchema.SchemaIndexDef
+                {
+                    StartIndex = (int)RevisionsTable.Resolved,
+                    Count = 2,
+                    Name = ResolvedFlagByEtagSlice,
+                    IsGlobal = true
+                });
+            }
         }
 
         public void InitializeFromDatabaseRecord(DatabaseRecord dbRecord)
@@ -192,7 +212,7 @@ namespace Raven.Server.Documents.Revisions
                 var msg = "Cannot enable revisions for documents as the revisions configuration " +
                           "in the database record is missing or not valid.";
                 _database.NotificationCenter.Add(AlertRaised.Create(
-                    _database.Name, 
+                    _database.Name,
                     $"Revisions error in {_database.Name}", msg,
                     AlertType.RevisionsConfigurationNotValid, NotificationSeverity.Error, _database.Name));
                 if (_logger.IsOperationsEnabled)
@@ -245,6 +265,12 @@ namespace Raven.Server.Documents.Revisions
                     return true;
                 if (existingDocument == null)
                 {
+                    if ((nonPersistentFlags & NonPersistentDocumentFlags.SkipRevisionCreation) == NonPersistentDocumentFlags.SkipRevisionCreation)
+                    {
+                        // Smuggler is configured to avoid creating new revisions during import
+                        return false;
+                    }
+
                     // we are not going to create a revision if it's an import from v3
                     // (since this import is going to import revisions as well)
                     return (nonPersistentFlags & NonPersistentDocumentFlags.LegacyHasRevisions) != NonPersistentDocumentFlags.LegacyHasRevisions;
@@ -279,20 +305,21 @@ namespace Raven.Server.Documents.Revisions
 
             using (DocumentIdWorker.GetLowerIdSliceAndStorageKey(context, id, out Slice lowerId, out Slice idPtr))
             {
-                var fromSmuggler = (nonPersistentFlags & NonPersistentDocumentFlags.FromSmuggler) == NonPersistentDocumentFlags.FromSmuggler;
                 var fromReplication = (nonPersistentFlags & NonPersistentDocumentFlags.FromReplication) == NonPersistentDocumentFlags.FromReplication;
 
                 var table = EnsureRevisionTableCreated(context.Transaction.InnerTransaction, collectionName);
 
                 // We want the revision's attachments to have a lower etag than the revision itself
-                if ((flags & DocumentFlags.HasAttachments) == DocumentFlags.HasAttachments &&
-                    fromSmuggler == false)
+                if ((flags & DocumentFlags.HasAttachments) == DocumentFlags.HasAttachments)
                 {
-                    using (Slice.From(context.Allocator, changeVector, out Slice changeVectorSlice))
+                    if (flags.Contain(DocumentFlags.Revision) == false)
                     {
-                        if (table.VerifyKeyExists(changeVectorSlice) == false)
+                        using (Slice.From(context.Allocator, changeVector, out Slice changeVectorSlice))
                         {
-                            _documentsStorage.AttachmentsStorage.RevisionAttachments(context, lowerId, changeVectorSlice);
+                            if (table.VerifyKeyExists(changeVectorSlice) == false)
+                            {
+                                _documentsStorage.AttachmentsStorage.RevisionAttachments(context, lowerId, changeVectorSlice);
+                            }
                         }
                     }
                 }
@@ -549,7 +576,7 @@ namespace Raven.Server.Documents.Revisions
             CreateTombstone(context, key, revisionEtag, collectionName, changeVector, lastModifiedTicks);
         }
 
-        private void CreateTombstone(DocumentsOperationContext context, Slice keySlice, long revisionEtag, 
+        private void CreateTombstone(DocumentsOperationContext context, Slice keySlice, long revisionEtag,
             CollectionName collectionName, string changeVector, long lastModifiedTicks)
         {
             var newEtag = _documentsStorage.GenerateNextEtag();
@@ -566,7 +593,7 @@ namespace Raven.Server.Documents.Revisions
                 tvb.Add(Bits.SwapBytes(newEtag));
                 tvb.Add(Bits.SwapBytes(revisionEtag));
                 tvb.Add(context.GetTransactionMarker());
-                tvb.Add((byte)DocumentTombstone.TombstoneType.Revision);
+                tvb.Add((byte)Tombstone.TombstoneType.Revision);
                 tvb.Add(collectionSlice);
                 tvb.Add((int)DocumentFlags.None);
                 tvb.Add(cv.Content.Ptr, cv.Size);
@@ -626,15 +653,17 @@ namespace Raven.Server.Documents.Revisions
                 flags &= ~DocumentFlags.HasAttachments;
             }
 
+            var fromReplication = nonPersistentFlags.Contain(NonPersistentDocumentFlags.FromReplication);
+
             var configuration = GetRevisionsConfiguration(collectionName.Name, flags);
-            if (configuration.Disabled)
+            if (configuration.Disabled && fromReplication == false)
                 return;
 
             var table = EnsureRevisionTableCreated(context.Transaction.InnerTransaction, collectionName);
 
-            if (configuration.PurgeOnDelete)
+            if (configuration.Disabled == false && configuration.PurgeOnDelete)
             {
-                using (GetKeyPrefix(context, lowerId, out Slice prefixSlice))
+                using (GetKeyPrefix(context, lowerId, out var prefixSlice))
                 {
                     DeleteRevisions(context, table, prefixSlice, collectionName, long.MaxValue, null, changeVector, lastModifiedTicks);
                     DeleteCountOfRevisions(context, prefixSlice);
@@ -643,7 +672,6 @@ namespace Raven.Server.Documents.Revisions
                 return;
             }
 
-            var fromReplication = (nonPersistentFlags & NonPersistentDocumentFlags.FromReplication) == NonPersistentDocumentFlags.FromReplication;
             if (fromReplication)
             {
                 void DeleteFromRevisionIfChangeVectorIsGreater()
@@ -738,7 +766,7 @@ namespace Raven.Server.Documents.Revisions
             prefixSlice = new Slice(SliceOptions.Key, keyMem);
             return scope;
         }
-        
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static ByteStringContext.InternalScope GetEtagAsSlice(DocumentsOperationContext context, long etag, out Slice slice)
         {
@@ -748,7 +776,7 @@ namespace Raven.Server.Documents.Revisions
             slice = new Slice(SliceOptions.Key, keyMem);
             return scope;
         }
-        
+
         private static long CountOfRevisions(DocumentsOperationContext context, Slice prefix)
         {
             var numbers = context.Transaction.InnerTransaction.ReadTree(RevisionsCountSlice);
@@ -793,7 +821,7 @@ namespace Raven.Server.Documents.Revisions
         {
             var table = new Table(RevisionsSchema, context.Transaction.InnerTransaction);
             using (GetEtagAsSlice(context, startEtag, out var slice))
-            {          
+            {
                 foreach (var tvr in table.SeekBackwardFrom(RevisionsSchema.Indexes[DeleteRevisionEtagSlice], slice))
                 {
                     if (take-- <= 0)
@@ -810,7 +838,7 @@ namespace Raven.Server.Documents.Revisions
                     }
 
                     yield return TableValueToRevision(context, ref tvr.Result.Reader);
-                } 
+                }
             }
         }
 
@@ -955,7 +983,7 @@ namespace Raven.Server.Documents.Revisions
                 {
                     if (take == 0)
                     {
-                        yield break;    
+                        yield break;
                     }
                     take--;
                     yield return TableValueToRevision(context, ref item.Result.Reader);

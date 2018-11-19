@@ -23,6 +23,7 @@ class migrateDatabaseModel {
     serverMajorVersion = ko.observable<Raven.Server.Smuggler.Migration.MajorVersion>("Unknown");
     buildVersion = ko.observable<number>();
     fullVersion = ko.observable<string>();
+    productVersion = ko.observable<string>();
     serverUrls = ko.observableArray<string>([]);
     databaseNames = ko.observableArray<string>([]);
     fileSystemNames = ko.observableArray<string>([]);
@@ -110,6 +111,8 @@ class migrateDatabaseModel {
         this.serverMajorVersionNumber = ko.pureComputed<string>(() => {
             const serverMajorVersion = this.serverMajorVersion();
             const buildVersionInt = this.buildVersion();
+            const productVersion = this.productVersion();
+
             if (!serverMajorVersion || !buildVersionInt) {
                 return null;
             }
@@ -129,10 +132,7 @@ class migrateDatabaseModel {
                 majorVersion = "3.5";
                 break;
             case "V4":
-                if (buildVersion === "40") {
-                    buildVersion = this.fullVersion();
-                }
-                majorVersion = "4.0";
+                majorVersion = productVersion;
                 break;
             default:
                 return null;

@@ -26,6 +26,7 @@ using Raven.Server.Smuggler.Documents.Data;
 using Raven.Server.Utils;
 using Raven.Server.Web.System;
 using Sparrow.Logging;
+using Sparrow.Platform;
 using Voron.Impl.Backup;
 using Voron.Util.Settings;
 using DatabaseSmuggler = Raven.Client.Documents.Smuggler.DatabaseSmuggler;
@@ -42,6 +43,7 @@ namespace Raven.Server.Documents.PeriodicBackup.Restore
         private readonly OperationCancelToken _operationCancelToken;
         private List<string> _filesToRestore;
         private bool _hasEncryptionKey;
+        private readonly bool _restoringToDefaultDataDirectory;
 
         public RestoreBackupTask(ServerStore serverStore,
             RestoreBackupConfiguration restoreConfiguration,
@@ -53,7 +55,7 @@ namespace Raven.Server.Documents.PeriodicBackup.Restore
             _nodeTag = nodeTag;
             _operationCancelToken = operationCancelToken;
 
-            ValidateArguments();
+            ValidateArguments(out _restoringToDefaultDataDirectory);
         }
 
         public async Task<IOperationResult> Execute(Action<IOperationProgress> onProgress)
@@ -111,15 +113,22 @@ namespace Raven.Server.Documents.PeriodicBackup.Restore
                         }
                     };
 
-                    DatabaseHelper.Validate(databaseName, restoreSettings.DatabaseRecord);
+                    DatabaseHelper.Validate(databaseName, restoreSettings.DatabaseRecord, _serverStore.Configuration);
                 }
 
                 var databaseRecord = restoreSettings.DatabaseRecord;
                 if (databaseRecord.Settings == null)
                     databaseRecord.Settings = new Dictionary<string, string>();
 
-                databaseRecord.Settings[RavenConfiguration.GetKey(x => x.Core.RunInMemory)] = "false";
-                databaseRecord.Settings[RavenConfiguration.GetKey(x => x.Core.DataDirectory)] = _restoreConfiguration.DataDirectory;
+                var runInMemoryConfigurationKey = RavenConfiguration.GetKey(x => x.Core.RunInMemory);
+                databaseRecord.Settings.Remove(runInMemoryConfigurationKey);
+                if (_serverStore.Configuration.Core.RunInMemory)
+                    databaseRecord.Settings[runInMemoryConfigurationKey] = "false";
+
+                var dataDirectoryConfigurationKey = RavenConfiguration.GetKey(x => x.Core.DataDirectory);
+                databaseRecord.Settings.Remove(dataDirectoryConfigurationKey); // removing because we want to restore to given location, not to serialized in backup one
+                if (_restoringToDefaultDataDirectory == false)
+                    databaseRecord.Settings[dataDirectoryConfigurationKey] = _restoreConfiguration.DataDirectory;
 
                 if (_hasEncryptionKey)
                 {
@@ -135,15 +144,11 @@ namespace Raven.Server.Documents.PeriodicBackup.Restore
                         Logger.Info(msg);
                 });
 
-                using (var database = new DocumentDatabase(databaseName,
-                    new RavenConfiguration(databaseName, ResourceType.Database)
-                    {
-                        Core =
-                        {
-                            DataDirectory = new PathSetting(_restoreConfiguration.DataDirectory),
-                            RunInMemory = false
-                        }
-                    }, _serverStore, addToInitLog))
+                var configuration = _serverStore
+                    .DatabasesLandlord
+                    .CreateDatabaseConfiguration(databaseName, ignoreDisabledDatabase: true, ignoreBeenDeleted: true, ignoreNotRelevant: true, databaseRecord);
+
+                using (var database = new DocumentDatabase(databaseName, configuration, _serverStore, addToInitLog))
                 {
                     // smuggler needs an existing document database to operate
                     var options = InitializeOptions.SkipLoadingDatabaseRecord;
@@ -314,9 +319,10 @@ namespace Raven.Server.Documents.PeriodicBackup.Restore
 
             result.Identities.Processed = true;
             result.CompareExchange.Processed = true;
+            onProgress.Invoke(result.Progress);
         }
 
-        private void ValidateArguments()
+        private void ValidateArguments(out bool restoringToDefaultDataDirectory)
         {
             if (string.IsNullOrWhiteSpace(_restoreConfiguration.BackupLocation))
                 throw new ArgumentException("Backup location can't be null or empty");
@@ -333,6 +339,8 @@ namespace Raven.Server.Documents.PeriodicBackup.Restore
             if (hasRestoreDataDirectory == false)
                 _restoreConfiguration.DataDirectory = GetDataDirectory();
 
+            restoringToDefaultDataDirectory = IsDefaultDataDirectory(_restoreConfiguration.DataDirectory, _restoreConfiguration.DatabaseName);
+
             _filesToRestore = GetFilesForRestore(_restoreConfiguration.BackupLocation);
             if (_filesToRestore.Count == 0)
                 throw new ArgumentException("No files to restore from the backup location, " +
@@ -345,6 +353,18 @@ namespace Raven.Server.Documents.PeriodicBackup.Restore
                 if (key.Length != 256 / 8)
                     throw new InvalidOperationException($"The size of the encryption key must be 256 bits, but was {key.Length * 8} bits.");
             }
+        }
+
+        private bool IsDefaultDataDirectory(string dataDirectory, string databaseName)
+        {
+            var defaultDataDirectory = RavenConfiguration.GetDataDirectoryPath(
+                _serverStore.Configuration.Core,
+                databaseName,
+                ResourceType.Database);
+
+            return PlatformDetails.RunningOnPosix == false
+                ? string.Equals(defaultDataDirectory, dataDirectory, StringComparison.OrdinalIgnoreCase)
+                : string.Equals(defaultDataDirectory, dataDirectory, StringComparison.Ordinal);
         }
 
         private string GetDataDirectory()
@@ -396,7 +416,7 @@ namespace Raven.Server.Documents.PeriodicBackup.Restore
             // the files are already ordered by name
             // take only the files that are relevant for smuggler restore
             _filesToRestore = _filesToRestore
-                .Where(RestoreUtils.IsBackup)
+                .Where(BackupUtils.IsBackupFile)
                 .OrderBackups()
                 .ToList();
 
@@ -422,6 +442,9 @@ namespace Raven.Server.Documents.PeriodicBackup.Restore
             var destination = new DatabaseDestination(database);
             for (var i = 0; i < _filesToRestore.Count - 1; i++)
             {
+                result.AddInfo($"Restoring file {(i + 1):#,#;;0}/{_filesToRestore.Count:#,#;;0}");
+                onProgress.Invoke(result.Progress);
+
                 var filePath = Path.Combine(backupDirectory, _filesToRestore[i]);
                 ImportSingleBackupFile(database, onProgress, result, filePath, context, destination, options,
                     onDatabaseRecordAction: smugglerDatabaseRecord =>
@@ -433,6 +456,10 @@ namespace Raven.Server.Documents.PeriodicBackup.Restore
 
             options.OperateOnTypes = oldOperateOnTypes;
             var lastFilePath = Path.Combine(backupDirectory, _filesToRestore.Last());
+
+            result.AddInfo($"Restoring file {_filesToRestore.Count:#,#;;0}/{_filesToRestore.Count:#,#;;0}");
+
+            onProgress.Invoke(result.Progress);
 
             ImportSingleBackupFile(database, onProgress, result, lastFilePath, context, destination, options,
                 onIndexAction: indexAndType =>
@@ -526,7 +553,7 @@ namespace Raven.Server.Documents.PeriodicBackup.Restore
                                     restoreSettings = JsonDeserializationServer.RestoreSettings(json);
 
                                     restoreSettings.DatabaseRecord.DatabaseName = _restoreConfiguration.DatabaseName;
-                                    DatabaseHelper.Validate(_restoreConfiguration.DatabaseName, restoreSettings.DatabaseRecord);
+                                    DatabaseHelper.Validate(_restoreConfiguration.DatabaseName, restoreSettings.DatabaseRecord, _serverStore.Configuration);
 
                                     if (restoreSettings.DatabaseRecord.Encrypted && _hasEncryptionKey == false)
                                         throw new ArgumentException("Database snapshot is encrypted but the encryption key is missing!");

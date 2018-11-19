@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using Raven.Client.Documents.Indexes;
+using Raven.Server.Documents.Indexes.Persistence.Lucene.Documents;
 using Raven.Server.Documents.Indexes.Static.Spatial;
 using Raven.Server.ServerWide.Context;
 using Sparrow.Json;
@@ -38,6 +39,8 @@ namespace Raven.Server.Documents.Indexes.Static
         public readonly TransactionOperationContext IndexContext;
 
         public readonly IndexDefinitionBase IndexDefinition;
+
+        public LuceneDocumentConverter CreateFieldConverter;
 
         public CurrentIndexingScope(DocumentsStorage documentsStorage, DocumentsOperationContext documentsContext, IndexDefinitionBase indexDefinition, TransactionOperationContext indexContext, Func<string, SpatialField> getSpatialField)
         {
@@ -84,7 +87,7 @@ namespace Raven.Server.Documents.Indexes.Static
 
                     // we intentionally don't dispose of the scope here, this is being tracked by the references
                     // and will be disposed there.
-                    Slice.External(_documentsContext.Allocator, keyLazy.Buffer, keyLazy.Size, out keySlice);
+                    Slice.External(_documentsContext.Allocator, keyLazy, out keySlice);
                 }
                 else
                 {

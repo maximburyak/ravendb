@@ -29,7 +29,7 @@ using Size = Sparrow.Size;
 
 namespace Raven.Server.Documents.ETL
 {
-    public abstract class EtlProcess : IDisposable, IDocumentTombstoneAware
+    public abstract class EtlProcess : IDisposable, ITombstoneAware
     {
         public string Tag { get; protected set; }
 
@@ -57,7 +57,9 @@ namespace Raven.Server.Documents.ETL
 
         public abstract EtlPerformanceStats[] GetPerformanceStats();
 
-        public abstract Dictionary<string, long> GetLastProcessedDocumentTombstonesPerCollection();       
+        public abstract Dictionary<string, long> GetLastProcessedTombstonesPerCollection();
+
+        public abstract OngoingTaskConnectionStatus GetConnectionStatus();
 
         public static EtlProcessState GetProcessState(DocumentDatabase database, string configurationName, string transformationName)
         {
@@ -96,7 +98,7 @@ namespace Raven.Server.Documents.ETL
         protected readonly DocumentDatabase Database;
         private readonly ServerStore _serverStore;
 
-        public readonly TConfiguration Configuration;        
+        public readonly TConfiguration Configuration;
 
         protected EtlProcess(Transformation transformation, TConfiguration configuration, DocumentDatabase database, ServerStore serverStore, string tag)
         {
@@ -113,20 +115,22 @@ namespace Raven.Server.Documents.ETL
             Statistics = new EtlProcessStatistics(Tag, Name, Database.NotificationCenter);
 
             if (transformation.ApplyToAllDocuments == false)
-                _collections = new HashSet<string>(Transformation.Collections, StringComparer.OrdinalIgnoreCase);                        
+                _collections = new HashSet<string>(Transformation.Collections, StringComparer.OrdinalIgnoreCase);
         }
 
         protected CancellationToken CancellationToken => _cts.Token;
 
         protected abstract IEnumerator<TExtracted> ConvertDocsEnumerator(IEnumerator<Document> docs, string collection);
 
-        protected abstract IEnumerator<TExtracted> ConvertTombstonesEnumerator(IEnumerator<DocumentTombstone> tombstones, string collection);
+        protected abstract IEnumerator<TExtracted> ConvertTombstonesEnumerator(IEnumerator<Tombstone> tombstones, string collection);
+
+        protected abstract bool ShouldTrackAttachmentTombstones();
 
         public virtual IEnumerable<TExtracted> Extract(DocumentsOperationContext context, long fromEtag, EtlStatsScope stats)
         {
             using (var scope = new DisposableScope())
             {
-                var enumerators = new List<(IEnumerator<Document> Docs, IEnumerator<DocumentTombstone> Tombstones, string Collection)>(Transformation.Collections.Count);
+                var enumerators = new List<(IEnumerator<Document> Docs, IEnumerator<Tombstone> Tombstones, string Collection)>(Transformation.Collections.Count);
 
                 if (Transformation.ApplyToAllDocuments)
                 {
@@ -135,6 +139,7 @@ namespace Raven.Server.Documents.ETL
 
                     var tombstones = Database.DocumentsStorage.GetTombstonesFrom(context, fromEtag, 0, int.MaxValue).GetEnumerator();
                     scope.EnsureDispose(tombstones);
+                    tombstones = new FilterTombstonesEnumerator(tombstones, stats, Tombstone.TombstoneType.Document, context);
 
                     enumerators.Add((docs, tombstones, null));
                 }
@@ -160,6 +165,18 @@ namespace Raven.Server.Documents.ETL
                         merged.AddEnumerator(ConvertTombstonesEnumerator(en.Tombstones, en.Collection));
                     }
 
+                    if (ShouldTrackAttachmentTombstones())
+                    {
+                        var attachmentTombstones = Database.DocumentsStorage
+                            .GetTombstonesFrom(context, AttachmentsStorage.AttachmentsTombstones, fromEtag, 0, int.MaxValue).GetEnumerator();
+                        scope.EnsureDispose(attachmentTombstones);
+
+                        attachmentTombstones = new FilterTombstonesEnumerator(attachmentTombstones, stats, Tombstone.TombstoneType.Attachment, context,
+                            fromCollections: Transformation.ApplyToAllDocuments ? null : Transformation.Collections);
+
+                        merged.AddEnumerator(ConvertTombstonesEnumerator(attachmentTombstones, null));
+                    }
+
                     while (merged.MoveNext())
                     {
                         yield return merged.Current;
@@ -170,7 +187,7 @@ namespace Raven.Server.Documents.ETL
 
         protected abstract EtlTransformer<TExtracted, TTransformed> GetTransformer(DocumentsOperationContext context);
 
-        public unsafe IEnumerable<TTransformed> Transform(IEnumerable<TExtracted> items, DocumentsOperationContext context, EtlStatsScope stats, EtlProcessState state)
+        public IEnumerable<TTransformed> Transform(IEnumerable<TExtracted> items, DocumentsOperationContext context, EtlStatsScope stats, EtlProcessState state)
         {
             using (var transformer = GetTransformer(context))
             {
@@ -210,7 +227,7 @@ namespace Raven.Server.Documents.ETL
                             stats.RecordLastTransformedEtag(item.Etag);
                             stats.RecordChangeVector(item.ChangeVector);
 
-                            if (CanContinueBatch(stats) == false)
+                            if (CanContinueBatch(stats, context) == false)
                                 break;
                         }
                         catch (JavaScriptParseException e)
@@ -281,14 +298,14 @@ namespace Raven.Server.Documents.ETL
             {
                 // double the fallback time (but don't cross Etl.MaxFallbackTime)
                 var secondsSinceLastError = (Database.Time.GetUtcNow() - Statistics.LastLoadErrorTime.Value).TotalSeconds;
-                
-                FallbackTime = TimeSpan.FromSeconds(Math.Min(Database.Configuration.Etl.MaxFallbackTime.AsTimeSpan.Seconds, Math.Max(5, secondsSinceLastError * 2)));
+
+                FallbackTime = TimeSpan.FromSeconds(Math.Min(Database.Configuration.Etl.MaxFallbackTime.AsTimeSpan.TotalSeconds, Math.Max(5, secondsSinceLastError * 2)));
             }
         }
 
         protected abstract void LoadInternal(IEnumerable<TTransformed> items, JsonOperationContext context);
 
-        public bool CanContinueBatch(EtlStatsScope stats)
+        public bool CanContinueBatch(EtlStatsScope stats, JsonOperationContext ctx)
         {
             if (stats.NumberOfExtractedItems >= Database.Configuration.Etl.MaxNumberOfExtractedDocuments)
             {
@@ -314,14 +331,14 @@ namespace Raven.Server.Documents.ETL
                 return false;
             }
 
-            var currentlyInUse = new Size(_threadAllocations.Allocations, SizeUnit.Bytes);
+            var currentlyInUse = new Size(_threadAllocations.TotalAllocated, SizeUnit.Bytes);
             if (currentlyInUse > _currentMaximumAllowedMemory)
             {
                 if (MemoryUsageGuard.TryIncreasingMemoryUsageForThread(_threadAllocations, ref _currentMaximumAllowedMemory,
                         currentlyInUse,
                         Database.DocumentsStorage.Environment.Options.RunningOn32Bits, Logger, out ProcessMemoryUsage memoryUsage) == false)
                 {
-                    var reason = $"Stopping the batch because cannot budget additional memory. Current budget: {_threadAllocations.TotalAllocated}. Current memory usage: " +
+                    var reason = $"Stopping the batch because cannot budget additional memory. Current budget: {new Size(_threadAllocations.TotalAllocated, SizeUnit.Bytes)}. Current memory usage: " +
                                  $"{nameof(memoryUsage.WorkingSet)} = {memoryUsage.WorkingSet}," +
                                  $"{nameof(memoryUsage.PrivateMemory)} = {memoryUsage.PrivateMemory}";
 
@@ -329,6 +346,8 @@ namespace Raven.Server.Documents.ETL
                         Logger.Info(reason);
 
                     stats.RecordBatchCompleteReason(reason);
+
+                    ctx.DoNotReuse = true;
 
                     return false;
                 }
@@ -348,7 +367,7 @@ namespace Raven.Server.Documents.ETL
 
             if (_longRunningWork == null)
                 return;
-            
+
             _waitForChanges.Set();
         }
 
@@ -382,11 +401,11 @@ namespace Raven.Server.Documents.ETL
                     if (Logger.IsInfoEnabled)
                         Logger.Info($"Failed to run ETL {Name}", e);
                 }
-            }, null, threadName);            
+            }, null, threadName);
 
             if (Logger.IsInfoEnabled)
                 Logger.Info($"Starting {Tag} process: '{Name}'.");
-            
+
         }
 
         public override void Stop()
@@ -449,7 +468,7 @@ namespace Raven.Server.Documents.ETL
                                     var extracted = Extract(context, loadLastProcessedEtag + 1, stats);
 
                                     var transformed = Transform(extracted, context, stats, state);
-                                    
+
                                     Load(transformed, context, stats);
 
                                     var lastProcessed = Math.Max(stats.LastLoadedEtag, stats.LastFilteredOutEtag);
@@ -569,10 +588,10 @@ namespace Raven.Server.Documents.ETL
 
         protected void EnsureThreadAllocationStats()
         {
-            _threadAllocations = NativeMemory.ThreadAllocations.Value;
+            _threadAllocations = NativeMemory.CurrentThreadStats;
         }
 
-        public override Dictionary<string, long> GetLastProcessedDocumentTombstonesPerCollection()
+        public override Dictionary<string, long> GetLastProcessedTombstonesPerCollection()
         {
             var lastProcessedEtag = GetProcessState(Database, Configuration.Name, Transformation.Name).GetLastProcessedEtagForNode(_serverStore.NodeTag);
 
@@ -590,6 +609,9 @@ namespace Raven.Server.Documents.ETL
             {
                 lastProcessedTombstones[collection] = lastProcessedEtag;
             }
+
+            if (ShouldTrackAttachmentTombstones())
+                lastProcessedTombstones[AttachmentsStorage.AttachmentsTombstones] = lastProcessedEtag;
 
             return lastProcessedTombstones;
         }
@@ -631,8 +653,14 @@ namespace Raven.Server.Documents.ETL
             Logger.Info(message.ToString());
         }
 
-        public OngoingTaskConnectionStatus GetConnectionStatus()
+        public override OngoingTaskConnectionStatus GetConnectionStatus()
         {
+            if (Configuration.Disabled)
+                return OngoingTaskConnectionStatus.NotActive;
+
+            if (FallbackTime != null)
+                return OngoingTaskConnectionStatus.Reconnect;
+
             if (Statistics.WasLatestLoadSuccessful || Statistics.LoadErrors == 0)
                 return OngoingTaskConnectionStatus.Active;
 

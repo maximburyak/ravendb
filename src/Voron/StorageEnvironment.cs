@@ -38,6 +38,13 @@ namespace Voron
 
     public class StorageEnvironment : IDisposable
     {
+        internal class IndirectReference
+        {
+            public StorageEnvironment Owner;
+        }
+
+        internal IndirectReference SelfReference = new IndirectReference();
+
         public void QueueForSyncDataFile()
         {
             GlobalFlushingBehavior.GlobalFlusher.Value.MaybeSyncEnvironment(this);
@@ -52,7 +59,16 @@ namespace Voron
         /// This is the shared storage where we are going to store all the static constants for names.
         /// WARNING: This context will never be released, so only static constants should be added here.
         /// </summary>
-        public static readonly ByteStringContext LabelsContext = new ByteStringContext(SharedMultipleUseFlag.None, ByteStringContext.MinBlockSizeInBytes);
+        private static readonly ByteStringContext _labelsContext = new ByteStringContext(SharedMultipleUseFlag.None, ByteStringContext.MinBlockSizeInBytes);
+
+        public static IDisposable GetStaticContext(out ByteStringContext ctx)
+        {
+            Monitor.Enter(_labelsContext);
+
+            ctx = _labelsContext;
+
+            return new DisposableAction(() => Monitor.Exit(_labelsContext));
+        }
 
         private readonly StorageEnvironmentOptions _options;
 
@@ -107,6 +123,7 @@ namespace Voron
         {
             try
             {
+                SelfReference.Owner = this;
                 _log = LoggingSource.Instance.GetLogger<StorageEnvironment>(options.BasePath.FullPath);
                 _options = options;
                 _dataPager = options.DataPager;
@@ -455,13 +472,14 @@ namespace Voron
 
         public void Dispose()
         {
+
             if (_envDispose.IsSet)
                 return; // already disposed
 
             _cancellationTokenSource.Cancel();
             try
             {
-                GlobalFlushingBehavior.GlobalFlusher.Value.RemoveFromFlushQueues(this);
+                SelfReference.Owner = null;
 
                 if (_journal != null) // error during ctor
                 {
@@ -505,6 +523,9 @@ namespace Voron
             finally
             {
                 var errors = new List<Exception>();
+
+                OnLogsApplied = null;
+
                 foreach (var disposable in new IDisposable[]
                 {
                     _journal,
@@ -565,9 +586,9 @@ namespace Voron
             return new Transaction(newLowLevelTransaction);
         }
 
-        public Transaction WriteTransaction(TransactionPersistentContext transactionPersistentContext, ByteStringContext context = null)
+        public Transaction WriteTransaction(TransactionPersistentContext transactionPersistentContext, ByteStringContext context = null, TimeSpan? timeout = null)
         {
-            var writeTransaction = new Transaction(NewLowLevelTransaction(transactionPersistentContext, TransactionFlags.ReadWrite, context, null));
+            var writeTransaction = new Transaction(NewLowLevelTransaction(transactionPersistentContext, TransactionFlags.ReadWrite, context, timeout));
             return writeTransaction;
         }
 
@@ -615,7 +636,7 @@ namespace Voron
 
                     _cancellationTokenSource.Token.ThrowIfCancellationRequested();
 
-                    _currentWriteTransactionHolder = NativeMemory.ThreadAllocations.Value;
+                    _currentWriteTransactionHolder = NativeMemory.CurrentThreadStats;
                     WriteTransactionStarted();
 
                     if (_endOfDiskSpace != null)
@@ -684,7 +705,7 @@ namespace Voron
         {
             var currentWriteTransactionHolder = _currentWriteTransactionHolder;
             if (currentWriteTransactionHolder != null && 
-                currentWriteTransactionHolder == NativeMemory.ThreadAllocations.Value)
+                currentWriteTransactionHolder == NativeMemory.CurrentThreadStats)
             {
                 throw new InvalidOperationException($"A write transaction is already opened by thread name: " +
                                                     $"{currentWriteTransactionHolder.Name}, Id: {currentWriteTransactionHolder.Id}");
@@ -719,7 +740,7 @@ namespace Voron
                 throw new TimeoutException("Tried and failed to get the tx lock with no timeout, someone else is holding the lock, will retry later...");
 
             var copy = _currentWriteTransactionHolder;
-            if (copy == NativeMemory.ThreadAllocations.Value)
+            if (copy == NativeMemory.CurrentThreadStats)
             {
                 throw new InvalidOperationException("A write transaction is already opened by this thread");
             }
@@ -735,7 +756,7 @@ namespace Voron
         private void ThrowOnTimeoutWaitingForReadFlushingInProgressLock(TimeSpan wait)
         {
             var copy = Journal.CurrentFlushingInProgressHolder;
-            if (copy == NativeMemory.ThreadAllocations.Value)
+            if (copy == NativeMemory.CurrentThreadStats)
             {
                 throw new InvalidOperationException("Flushing is already being performed by this thread");
             }
@@ -890,7 +911,9 @@ namespace Voron
                 NextPageNumber = NextPageNumber,
                 CountOfTrees = countOfTrees,
                 CountOfTables = countOfTables,
-                Journals = Journal.Files.ToList()
+                Journals = Journal.Files.ToList(),
+                TempPath = Options.TempPath,
+                JournalPath = (Options as StorageEnvironmentOptions.DirectoryStorageEnvironmentOptions)?.JournalPath
             });
         }
 
@@ -954,7 +977,9 @@ namespace Voron
                 FixedSizeTrees = fixedSizeTrees,
                 Tables = tables,
                 CalculateExactSizes = calculateExactSizes,
-                ScratchBufferPoolInfo = _scratchBufferPool.InfoForDebug(PossibleOldestReadTransaction(tx.LowLevelTransaction))
+                ScratchBufferPoolInfo = _scratchBufferPool.InfoForDebug(PossibleOldestReadTransaction(tx.LowLevelTransaction)),
+                TempPath = Options.TempPath,
+                JournalPath = (Options as StorageEnvironmentOptions.DirectoryStorageEnvironmentOptions)?.JournalPath
             });
         }
 

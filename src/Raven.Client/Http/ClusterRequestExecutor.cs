@@ -94,7 +94,7 @@ namespace Raven.Client.Http
                     var command = new GetClusterTopologyCommand();
                     await ExecuteAsync(node, null, context, command, shouldRetry: false).ConfigureAwait(false);
 
-                    ClusterTopologyLocalCache.TrySaving(TopologyHash, command.Result, context);
+                    ClusterTopologyLocalCache.TrySaving(TopologyHash, command.Result, Conventions, context);
 
                     var results = command.Result;
                     var newTopology = new Topology
@@ -130,6 +130,11 @@ namespace Raven.Client.Http
                     OnTopologyUpdated(newTopology);
                 }
             }
+            catch(Exception)
+            {
+                if (Disposed == false)
+                    throw;
+            }
             finally
             {
                 _clusterTopologySemaphore.Release();
@@ -150,15 +155,9 @@ namespace Raven.Client.Http
                 , list.Select(x => x.Item2));
         }
 
-        public override void Dispose()
-        {
-            _clusterTopologySemaphore.Wait();
-            base.Dispose();
-        }
-
         protected override bool TryLoadFromCache(JsonOperationContext context)
         {
-            var clusterTopology = ClusterTopologyLocalCache.TryLoad(TopologyHash, context);
+            var clusterTopology = ClusterTopologyLocalCache.TryLoad(TopologyHash, Conventions, context);
             if (clusterTopology == null)
                 return false;
 
