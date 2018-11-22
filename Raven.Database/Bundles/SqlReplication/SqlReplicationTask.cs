@@ -154,7 +154,10 @@ namespace Raven.Database.Bundles.SqlReplication
                     Database.WorkContext.ShouldNotifyAboutWork(() => "recorded a deleted document " + id);
             });
             if (Log.IsDebugEnabled)
+            {
                 Log.Debug(() => "recorded a deleted document etag:" + metadata.Value<string>(Constants.MetadataEtagField) + " id: " + id);
+            }
+                
         }
 
         private SqlReplicationStatus GetReplicationStatus()
@@ -442,8 +445,12 @@ namespace Raven.Database.Bundles.SqlReplication
                         {
                             var lastDocEtag = destEtag.LastDocEtag;
                             if (currentLatestEtag != null && EtagUtil.IsGreaterThan(currentLatestEtag, lastDocEtag))
-                                lastDocEtag = currentLatestEtag;
+                            {
+                                if (Log.IsDebugEnabled)
+                                    Log.Debug($"Switche LastDocEtag ({destEtag.LastDocEtag})to a higher one ({currentLatestEtag}) in {cfg.Name}");
 
+                                lastDocEtag = currentLatestEtag;
+                            }
                             destEtag.LastDocEtag = lastDocEtag;
                         }
                     }
@@ -574,11 +581,15 @@ namespace Raven.Database.Bundles.SqlReplication
                 }
                 catch (SynchronizationLockException)
                 {
+                    if (Log.IsDebugEnabled)
+                        Log.Debug($"SaveNewReplicationStatus failed due to SynchronizationLockException");
                     // just ignore it, we'll save that next time
                     break;
                 }
                 catch (ConcurrencyException)
                 {
+                    if (Log.IsDebugEnabled)
+                        Log.Debug($"SaveNewReplicationStatus failed due to ConcurrencyException");
                     Thread.Sleep(50);
                 }
             }

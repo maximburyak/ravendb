@@ -860,6 +860,16 @@ namespace Raven.Database.Actions
                                 if (string.IsNullOrEmpty(collection) == false)
                                     Database.LastCollectionEtags.Update(collection);
 
+                                if (Log.IsDebugEnabled)
+                                {
+                                    if (metadataVar[Constants.MetadataEtagField] == null || string.IsNullOrEmpty(metadataVar[Constants.MetadataEtagField].ToString()))
+                                    {
+                                        if (Log.IsDebugEnabled)
+                                            Log.Debug($"Document {key} has not etag field in it's metadata");
+                                    }
+                                    metadataVar[Constants.MetadataEtagField] = etag.ToString();
+                                }
+
                                 Database.Notifications.RaiseNotifications(new DocumentChangeNotification
                                 {
                                     Id = key,
