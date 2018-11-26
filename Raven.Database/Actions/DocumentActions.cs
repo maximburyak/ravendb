@@ -862,12 +862,23 @@ namespace Raven.Database.Actions
 
                                 if (Log.IsDebugEnabled)
                                 {
-                                    if (metadataVar[Constants.MetadataEtagField] == null || string.IsNullOrEmpty(metadataVar[Constants.MetadataEtagField].ToString()))
+                                    if (metadataVar == null)
                                     {
                                         if (Log.IsDebugEnabled)
-                                            Log.Debug($"Document {key} has not etag field in it's metadata");
+                                            Log.Debug($"Document {key} has no metadata info");
+
+                                        metadataVar = new RavenJObject();
+                                        metadataVar[Constants.MetadataEtagField] = etag?.ToString();
                                     }
-                                    metadataVar[Constants.MetadataEtagField] = etag.ToString();
+                                    else
+                                    {
+                                        if (metadataVar[Constants.MetadataEtagField] == null || string.IsNullOrEmpty(metadataVar[Constants.MetadataEtagField].ToString()))
+                                        {
+                                            if (Log.IsDebugEnabled)
+                                                Log.Debug($"Document {key} has no etag field in it's metadata");
+                                        }
+                                        metadataVar[Constants.MetadataEtagField] = etag?.ToString();
+                                    }                                    
                                 }
 
                                 Database.Notifications.RaiseNotifications(new DocumentChangeNotification
