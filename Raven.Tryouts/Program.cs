@@ -1,47 +1,15 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
-using System.IO;
 using System.Threading;
-using System.Threading.Tasks;
 using Raven.Abstractions.Data;
-using Raven.Abstractions.FileSystem;
-using Raven.Abstractions.Smuggler;
 using Raven.Client.Document;
-using Raven.Database.Extensions;
 using Raven.Json.Linq;
-using Raven.Powershell;
-using Raven.Smuggler;
-using Raven.Tests.Bugs;
-using Raven.Tests.Common;
-using Raven.Tests.FileSystem;
-using Raven.Tests.Raft.Client;
-using Raven.Tests.Smuggler;
-using Raven.Tests.Subscriptions;
-using Xunit;
-using Order = Raven.Tests.Common.Dto.Faceted.Order;
-using Raven.Tests.Raft;
-using Raven.Tests.Faceted;
-using Raven.Abstractions.Replication;
-using Raven.Tests.Bundles.LiveTest;
-using Raven.Tests.Core.BulkInsert;
-using Raven.Tests.Notifications;
 using Raven.Database.Bundles.SqlReplication;
 using System.Linq;
 using Raven.Client.Indexes;
 using Raven.Client.Embedded;
-
-using Raven.Tests.Common.Util;
 using Raven.Client;
-#if !DNXCORE50
-using Raven.Tests.Sorting;
-using Raven.SlowTests.RavenThreadPool;
-using Raven.Tests.Core;
-using Raven.Tests.Core.Commands;
-using Raven.Tests.Issues;
-using Raven.Tests.MailingList;
-using Raven.Tests.FileSystem.ClientApi;
-#endif
+
 
 namespace Raven.Tryouts
 {
@@ -231,9 +199,14 @@ namespace Raven.Tryouts
 
     public class DTCSqlReplicationTest
     {
-        private const int DocsCount = 10 * 1000;
+        private const int DocsCount = 1000;
         private const int port = 8079;
 
+
+        private const string SQLReplicationConnectionString = @"Data Source=localhost\SQLEXPRESS01;
+                        Initial Catalog=People;
+                        Integrated Security=SSPI;
+                        ";
         public void SqlReplicationTest()
         {
             using (var sysStore = new EmbeddableDocumentStore()
@@ -612,10 +585,7 @@ namespace Raven.Tryouts
                 {
                     Id = "Raven/SqlReplication/Configuration/Users",
                     Name = "Users",
-                    ConnectionString = @"Data Source=MAXIM-WINPC\SQLEXPRESS;
-                        Initial Catalog=People;
-                        Integrated Security=SSPI;
-                        ",
+                    ConnectionString = SQLReplicationConnectionString,
                     FactoryName = @"System.Data.SqlClient",
                     RavenEntityName = "Users",
                     SqlReplicationTables =
@@ -638,10 +608,7 @@ namespace Raven.Tryouts
                 {
                     Id = "Raven/SqlReplication/Configuration/Cats",
                     Name = "Cats",
-                    ConnectionString = @"Data Source=MAXIM-WINPC\SQLEXPRESS;
-                        Initial Catalog=People;
-                        Integrated Security=SSPI;
-                        ",
+                    ConnectionString = SQLReplicationConnectionString,
                     FactoryName = @"System.Data.SqlClient",
                     RavenEntityName = "Cats",
                     SqlReplicationTables =
@@ -663,10 +630,7 @@ namespace Raven.Tryouts
                 {
                     Id = "Raven/SqlReplication/Configuration/Dogs",
                     Name = "Dogs",
-                    ConnectionString = @"Data Source=MAXIM-WINPC\SQLEXPRESS;
-                        Initial Catalog=People;
-                        Integrated Security=SSPI;
-                        ",
+                    ConnectionString = SQLReplicationConnectionString,
                     FactoryName = @"System.Data.SqlClient",
                     RavenEntityName = "Dogs",
                     SqlReplicationTables =
@@ -687,10 +651,7 @@ namespace Raven.Tryouts
                 {
                     Id = "Raven/SqlReplication/Configuration/Horses",
                     Name = "Horses",
-                    ConnectionString = @"Data Source=MAXIM-WINPC\SQLEXPRESS;
-                        Initial Catalog=People;
-                        Integrated Security=SSPI;
-                        ",
+                    ConnectionString = SQLReplicationConnectionString,
                     FactoryName = @"System.Data.SqlClient",
                     RavenEntityName = "Horses",
                     SqlReplicationTables =
@@ -711,10 +672,7 @@ namespace Raven.Tryouts
                 {
                     Id = "Raven/SqlReplication/Configuration/Ravens",
                     Name = "Ravens",
-                    ConnectionString = @"Data Source=MAXIM-WINPC\SQLEXPRESS;
-                        Initial Catalog=People;
-                        Integrated Security=SSPI;
-                        ",
+                    ConnectionString = SQLReplicationConnectionString,
                     FactoryName = @"System.Data.SqlClient",
                     RavenEntityName = "Ravens",
                     SqlReplicationTables =
@@ -735,10 +693,7 @@ namespace Raven.Tryouts
                 {
                     Id = "Raven/SqlReplication/Configuration/Peageons",
                     Name = "Peageons",
-                    ConnectionString = @"Data Source=MAXIM-WINPC\SQLEXPRESS;
-                        Initial Catalog=People;
-                        Integrated Security=SSPI;
-                        ",
+                    ConnectionString = SQLReplicationConnectionString,
                     FactoryName = @"System.Data.SqlClient",
                     RavenEntityName = "Peageons",
                     SqlReplicationTables =

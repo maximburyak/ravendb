@@ -139,6 +139,7 @@ namespace Raven.Database.Bundles.SqlReplication
 
         private void RecordDelete(string id, RavenJObject metadata)
         {
+            Etag etag = null;
             Database.TransactionalStorage.Batch(accessor =>
             {
                 bool hasChanges = false;
@@ -148,15 +149,17 @@ namespace Raven.Database.Bundles.SqlReplication
                         continue;
 
                     hasChanges = true;
-                    accessor.Lists.Set(GetSqlReplicationDeletionName(config), id, metadata, UuidType.Documents);
+                    string sqlReplicationName = GetSqlReplicationDeletionName(config);
+                    etag = accessor.Lists.Set(sqlReplicationName, id, metadata, UuidType.Documents);
+                    if (Log.IsDebugEnabled)
+                    {
+                        Log.Debug(() => $"For sql replication replication {sqlReplicationName} recorded a deleted document, under etag: {etag}, document etag: { metadata.Value<string>(Constants.MetadataEtagField)} id: {id}");
+                    }
                 }
                 if (hasChanges)
                     Database.WorkContext.ShouldNotifyAboutWork(() => "recorded a deleted document " + id);
             });
-            if (Log.IsDebugEnabled)
-            {
-                Log.Debug(() => "recorded a deleted document etag:" + metadata.Value<string>(Constants.MetadataEtagField) + " id: " + id);
-            }
+            
                 
         }
 
@@ -285,7 +288,7 @@ namespace Raven.Database.Bundles.SqlReplication
                                     if (Log.IsDebugEnabled)
                                     {
                                         var ids = string.Join(" , ", deletedDocs.Select(x => x.Key));
-                                        Log.Debug($"Documents found to delete from etag {cfg.LastReplicatedEtag } to etag {lastBatchEtag } in sql replication {cfg.Name}: {ids}");
+                                        Log.Debug($"For sqlReplication {cfg.Name} for Documents found to delete from etag {cfg.LastReplicatedEtag } to etag {lastBatchEtag } in sql replication {cfg.Name}: {ids}");
                                     }
                                     deletedDocsByConfig[cfg] = deletedDocs;
                                 });
@@ -361,7 +364,7 @@ namespace Raven.Database.Bundles.SqlReplication
                                             {
                                                 if (Log.IsDebugEnabled)
                                                 {
-                                                    Log.Debug($"Removing all replicated deletes prior to etag {deletedDocs[deletedDocs.Count - 1].Etag}");
+                                                    Log.Debug($"For sqlReplication {replicationConfig.Name} Removing all replicated deletes prior to etag {deletedDocs[deletedDocs.Count - 1].Etag}");
                                                 }
 
                                                 Database.TransactionalStorage.Batch(accessor =>
