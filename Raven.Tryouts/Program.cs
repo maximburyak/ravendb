@@ -1,15 +1,47 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 using System.Threading;
+using System.Threading.Tasks;
 using Raven.Abstractions.Data;
+using Raven.Abstractions.FileSystem;
+using Raven.Abstractions.Smuggler;
 using Raven.Client.Document;
+using Raven.Database.Extensions;
 using Raven.Json.Linq;
+using Raven.Powershell;
+using Raven.Smuggler;
+using Raven.Tests.Bugs;
+using Raven.Tests.Common;
+using Raven.Tests.FileSystem;
+using Raven.Tests.Raft.Client;
+using Raven.Tests.Smuggler;
+using Raven.Tests.Subscriptions;
+using Xunit;
+using Order = Raven.Tests.Common.Dto.Faceted.Order;
+using Raven.Tests.Raft;
+using Raven.Tests.Faceted;
+using Raven.Abstractions.Replication;
+using Raven.Tests.Bundles.LiveTest;
+using Raven.Tests.Core.BulkInsert;
+using Raven.Tests.Notifications;
 using Raven.Database.Bundles.SqlReplication;
 using System.Linq;
 using Raven.Client.Indexes;
 using Raven.Client.Embedded;
-using Raven.Client;
 
+using Raven.Tests.Common.Util;
+using Raven.Client;
+#if !DNXCORE50
+using Raven.Tests.Sorting;
+using Raven.SlowTests.RavenThreadPool;
+using Raven.Tests.Core;
+using Raven.Tests.Core.Commands;
+using Raven.Tests.Issues;
+using Raven.Tests.MailingList;
+using Raven.Tests.FileSystem.ClientApi;
+#endif
 
 namespace Raven.Tryouts
 {
@@ -199,14 +231,9 @@ namespace Raven.Tryouts
 
     public class DTCSqlReplicationTest
     {
-        private const int DocsCount = 1000;
+        private const int DocsCount =  1_000;
         private const int port = 8079;
 
-
-        private const string SQLReplicationConnectionString = @"Data Source=localhost\SQLEXPRESS01;
-                        Initial Catalog=People;
-                        Integrated Security=SSPI;
-                        ";
         public void SqlReplicationTest()
         {
             using (var sysStore = new EmbeddableDocumentStore()
@@ -387,7 +414,8 @@ namespace Raven.Tryouts
                     Console.WriteLine($"{UsersIDs.Count} registered, wait for all documents to be replicated and then press any key");
                     Console.ReadLine();
 
-                    List<string> curUsersBatchToDelete = new List<string>();
+                    List<string> usersBatchToDeleteOnSource = new List<string>();
+                    List<string> usersBatchToDeleteOnDest = new List<string>();
                     var skipped = 0;
                     var created = 0;
 
@@ -396,40 +424,16 @@ namespace Raven.Tryouts
                     var curRand = rand.Next(3, 6);
 
 
-                    while ((curUsersBatchToDelete = UsersIDs.Skip(skipped).Take(curRand).ToList()).Count > 0)
+                    //while ((curUsersBatchToDelete = UsersIDs.Skip(skipped).Take(curRand).ToList()).Count > 0 )
+                    while ((usersBatchToDeleteOnSource = UsersIDs.Skip(skipped).Take(curRand).ToList()).Count > 0 &&
+                        (usersBatchToDeleteOnDest = UsersIDs.Skip(UsersIDs.Count / 2 + skipped).Take(curRand).ToList()).Count > 0 &&
+                        skipped < UsersIDs.Count / 2)
                     {
-                        using (var session = deletesDB.OpenSession())
+                        using (var originSession = deletesDB.OpenSession())
+                        using (var sqlReplicationSession = sqlReplicationDB.OpenSession())
                         {
-                            session.Advanced.MaxNumberOfRequestsPerSession = 1000000;
-                            //using (var transaction = new TransactionScope())
-                            //{
-                            //    Transaction.Current.EnlistDurable(DummyEnlistmentNotification.Id,
-                            //                        new DummyEnlistmentNotification(),
-                            //                        EnlistmentOptions.None);
-
-                            foreach (var item in curUsersBatchToDelete)
-                            {
-                                var user = session.Load<User>(item);
-                                session.Delete(user);
-                                //  Console.WriteLine($"deleted id {item}");
-                                session.SaveChanges();
-                            }
-
-                            DeleteEntities<Cat>(CatsIDs, skipped, curRand, session);
-                            DeleteEntities<Dog>(DogsIDs, skipped, curRand, session);
-                            DeleteEntities<Horse>(HorsesIDs, skipped, curRand, session);
-                            DeleteEntities<Raven>(RavensIDs, skipped, curRand, session);
-                            DeleteEntities<Peageon>(PeageonsIDs, skipped, curRand, session);
-
-                            session.Load<Rock>(RocksIDs.Skip(rand.Next(0, RocksIDs.Count - 1)).First()).Age++;
-                            session.Store(new Chair
-                            {
-                                Name = "Kisse" + skipped,
-                                Age = skipped
-                            });
-
-                            //      transaction.Complete();
-                            //}
+                            DeletesOnSession(CatsIDs, DogsIDs, HorsesIDs, RavensIDs, PeageonsIDs, RocksIDs, usersBatchToDeleteOnSource, skipped, rand, curRand, originSession);
+                            DeletesOnSession(CatsIDs, DogsIDs, HorsesIDs, RavensIDs, PeageonsIDs, RocksIDs, usersBatchToDeleteOnDest, UsersIDs.Count/2+ skipped, rand, curRand, sqlReplicationSession);
                         }
                         skipped += curRand;
                         curRand = rand.Next(3, 6);
@@ -454,9 +458,19 @@ namespace Raven.Tryouts
                     {
                         session.Advanced.MaxNumberOfRequestsPerSession = 1000000;
 
-                        while (session.Query<User>().Customize(x => x.WaitForNonStaleResults(TimeSpan.FromMinutes(5))).Count() < usersCount)
+                        int tempUsersCount = session.Query<User>().Customize(x => x.WaitForNonStaleResults(TimeSpan.FromMinutes(5))).Count();
+                        int curTempUsersCount= 0;
+                        Console.WriteLine($"tempUsersCound: {tempUsersCount}");
+
+                        Thread.Sleep(1000);
+                        while ((curTempUsersCount = session.Query<User>().Customize(x => x.WaitForNonStaleResults(TimeSpan.FromMinutes(5))).Count()) < usersCount)
                         {
+                            if (curTempUsersCount == tempUsersCount)
+                                break;
+                            tempUsersCount = curTempUsersCount;
+                            Console.WriteLine($"tempUsersCound: {tempUsersCount}");
                             Thread.Sleep(1000);
+                            
                         }
                         usersCount = session.Query<User>().Customize(x => x.WaitForNonStaleResults(TimeSpan.FromMinutes(5))).Count();
                         var catsCount = session.Query<Cat>().Customize(x => x.WaitForNonStaleResults(TimeSpan.FromMinutes(5))).Count();
@@ -469,6 +483,31 @@ namespace Raven.Tryouts
                     Console.ReadLine();
                 }
             }
+        }
+
+        private void DeletesOnSession(List<string> CatsIDs, List<string> DogsIDs, List<string> HorsesIDs, List<string> RavensIDs, List<string> PeageonsIDs, List<string> RocksIDs, List<string> curUsersBatchToDelete, int skipped, System.Random rand, int curRand, IDocumentSession session)
+        {
+            session.Advanced.MaxNumberOfRequestsPerSession = 1000000;
+
+            foreach (var item in curUsersBatchToDelete)
+            {
+                var user = session.Load<User>(item);
+                session.Delete(user);
+                session.SaveChanges();
+            }
+
+            DeleteEntities<Cat>(CatsIDs, skipped, curRand, session);
+            DeleteEntities<Dog>(DogsIDs, skipped, curRand, session);
+            DeleteEntities<Horse>(HorsesIDs, skipped, curRand, session);
+            DeleteEntities<Raven>(RavensIDs, skipped, curRand, session);
+            DeleteEntities<Peageon>(PeageonsIDs, skipped, curRand, session);
+
+            session.Load<Rock>(RocksIDs.Skip(rand.Next(0, RocksIDs.Count - 1)).First()).Age++;
+            session.Store(new Chair
+            {
+                Name = "Kisse" + skipped,
+                Age = skipped
+            });
         }
 
         private static void DefineReplicationFromDeletedToSqlReplication(string sqlReplicationDBName, string deletesSourceDBName, IDocumentStore deletesDB, IDocumentStore sqlReplicationDB)
@@ -585,7 +624,10 @@ namespace Raven.Tryouts
                 {
                     Id = "Raven/SqlReplication/Configuration/Users",
                     Name = "Users",
-                    ConnectionString = SQLReplicationConnectionString,
+                    ConnectionString = @"Data Source=MAXIM-WINPC\SQLEXPRESS;
+                        Initial Catalog=People;
+                        Integrated Security=SSPI;
+                        ",
                     FactoryName = @"System.Data.SqlClient",
                     RavenEntityName = "Users",
                     SqlReplicationTables =
@@ -608,7 +650,10 @@ namespace Raven.Tryouts
                 {
                     Id = "Raven/SqlReplication/Configuration/Cats",
                     Name = "Cats",
-                    ConnectionString = SQLReplicationConnectionString,
+                    ConnectionString = @"Data Source=MAXIM-WINPC\SQLEXPRESS;
+                        Initial Catalog=People;
+                        Integrated Security=SSPI;
+                        ",
                     FactoryName = @"System.Data.SqlClient",
                     RavenEntityName = "Cats",
                     SqlReplicationTables =
@@ -630,7 +675,10 @@ namespace Raven.Tryouts
                 {
                     Id = "Raven/SqlReplication/Configuration/Dogs",
                     Name = "Dogs",
-                    ConnectionString = SQLReplicationConnectionString,
+                    ConnectionString = @"Data Source=MAXIM-WINPC\SQLEXPRESS;
+                        Initial Catalog=People;
+                        Integrated Security=SSPI;
+                        ",
                     FactoryName = @"System.Data.SqlClient",
                     RavenEntityName = "Dogs",
                     SqlReplicationTables =
@@ -651,7 +699,10 @@ namespace Raven.Tryouts
                 {
                     Id = "Raven/SqlReplication/Configuration/Horses",
                     Name = "Horses",
-                    ConnectionString = SQLReplicationConnectionString,
+                    ConnectionString = @"Data Source=MAXIM-WINPC\SQLEXPRESS;
+                        Initial Catalog=People;
+                        Integrated Security=SSPI;
+                        ",
                     FactoryName = @"System.Data.SqlClient",
                     RavenEntityName = "Horses",
                     SqlReplicationTables =
@@ -672,7 +723,10 @@ namespace Raven.Tryouts
                 {
                     Id = "Raven/SqlReplication/Configuration/Ravens",
                     Name = "Ravens",
-                    ConnectionString = SQLReplicationConnectionString,
+                    ConnectionString = @"Data Source=MAXIM-WINPC\SQLEXPRESS;
+                        Initial Catalog=People;
+                        Integrated Security=SSPI;
+                        ",
                     FactoryName = @"System.Data.SqlClient",
                     RavenEntityName = "Ravens",
                     SqlReplicationTables =
@@ -693,7 +747,10 @@ namespace Raven.Tryouts
                 {
                     Id = "Raven/SqlReplication/Configuration/Peageons",
                     Name = "Peageons",
-                    ConnectionString = SQLReplicationConnectionString,
+                    ConnectionString = @"Data Source=MAXIM-WINPC\SQLEXPRESS;
+                        Initial Catalog=People;
+                        Integrated Security=SSPI;
+                        ",
                     FactoryName = @"System.Data.SqlClient",
                     RavenEntityName = "Peageons",
                     SqlReplicationTables =
@@ -716,13 +773,53 @@ namespace Raven.Tryouts
             }
         }
     }
+
+    public class MyTest : RavenTest
+    {
+        [Fact]
+        public void DoStuff()
+        {
+            using (var store = NewDocumentStore())
+            {
+                Abstractions.Data.Etag firstEtag = null;
+                store.DocumentDatabase.TransactionalStorage.Batch(x =>
+                {
+                    firstEtag = x.Lists.Set("foobar", "init", new RavenJObject(), UuidType.Documents);
+                    for (var i=0; i< 10; i++)
+                    {
+                        x.Lists.Set("foobar", "item" + 0, new RavenJObject(), UuidType.Documents);
+                    }
+                });
+
+
+                store.DocumentDatabase.TransactionalStorage.Batch(x =>
+                {
+                    var results = x.Lists.Read("foobar", firstEtag, null, 10_000);
+                    foreach (var item in results)
+                    {
+                        Console.WriteLine(item.Key);
+                    }
+                });
+
+
+
+            }
+        }
+    }
     public class Program
     {
         public static void Main(string[] args)
         {
+
+            //using (var test = new MyTest())
+            //{
+            //    test.DoStuff();
+            //}
             var test = new DTCSqlReplicationTest();
 
             test.SqlReplicationTest();
+
+
 
         }
     }
