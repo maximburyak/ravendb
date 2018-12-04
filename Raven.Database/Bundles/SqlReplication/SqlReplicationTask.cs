@@ -261,20 +261,17 @@ namespace Raven.Database.Bundles.SqlReplication
                         Database.WorkContext.CancellationToken.ThrowIfCancellationRequested();
                         
                         var prefetchingBehavior = sqlConfigGroup.PrefetchingBehavior;
-                        var configsToWorkOn = sqlConfigGroup.ConfigsToWorkOn;
+                        var configsToWorkOn = sqlConfigGroup.ConfigsToWorkOn.ToList();//create clone
 
                         List<JsonDocument> documents;
                         using (prefetchingBehavior.DocumentBatchFrom(sqlConfigGroup.LastReplicatedEtag, changesBatchSize, out documents))
                         {
-                            Etag latestEtag = null, lastBatchEtag = null;
+                            Etag lastBatchEtag = null;
                             if (documents.Count != 0)
                                 lastBatchEtag = documents[documents.Count - 1].Etag;
 
                             var replicationDuration = Stopwatch.StartNew();
                             documents.RemoveAll(x => x.Key.StartsWith("Raven/", StringComparison.InvariantCultureIgnoreCase)); // we ignore system documents here
-
-                            if (documents.Count != 0)
-                                latestEtag = documents[documents.Count - 1].Etag;
 
                             documents.RemoveAll(x => prefetchingBehavior.FilterDocuments(x) == false);
 
@@ -288,46 +285,76 @@ namespace Raven.Database.Bundles.SqlReplication
                                 {
                                     List<ListItem> deletedDocs = accessor.Lists.Read(GetSqlReplicationDeletionName(cfg),
                                             cfg.LastReplicatedEtag,
-                                            latestEtag,
+                                            lastBatchEtag,
                                             MaxNumberOfDeletionsToReplicate + 1)
                                         .ToList();
+
+                                    if (deletedDocs.Count > MaxNumberOfDeletionsToReplicate-1 && 
+                                        lastBatchEtag != null)
+                                    {
+                                        // we have more docs in range then we allow for, so we need to trim
+                                        // the documents to the last delete here
+
+                                        var lastDeleteEtag = deletedDocs[deletedDocs.Count - 1].Etag;
+                                        documents.RemoveAll(x => x.Etag.CompareTo(lastBatchEtag) >= 0);
+                                        if(lastBatchEtag.CompareTo(lastDeleteEtag) > 0)
+                                            lastBatchEtag = lastDeleteEtag;
+                                    }
 
                                     if (Log.IsDebugEnabled)
                                     {
                                         var ids = string.Join(" , ", deletedDocs.Select(x => x.Key));
-                                        Log.Debug($"For sqlReplication {cfg.Name} for Documents found to delete from etag {cfg.LastReplicatedEtag } to etag {latestEtag} in sql replication {cfg.Name}: {ids}");
+                                        Log.Debug($"For sqlReplication {cfg.Name} for Documents found to delete from etag {cfg.LastReplicatedEtag } to etag {lastBatchEtag} in sql replication {cfg.Name}: {ids}");
                                     }
                                     deletedDocsByConfig[cfg] = deletedDocs;
                                 });
                             }
 
                             // No documents AND there aren't any deletes to replicate
-                            if (documents.Count == 0 && deletedDocsByConfig.Sum(x => x.Value.Count) == 0)
+                            if (documents.Count == 0)
                             {
-
-                                // so we filtered some documents, let us update the etag about that.
-                                if (latestEtag != null)
+                                foreach (var item in deletedDocsByConfig)
                                 {
-                                    if (Log.IsDebugEnabled)
-                                    {                                        
-                                        Log.Debug($"Found no documents of deletes to replicate for configs:  ({string.Join(",",configsToWorkOn.Select(x=>x.Name))}). latestEtag {latestEtag} will be set to successes");
-                                    }
-
-                                    foreach (var configToWorkOn in configsToWorkOn)
-                                        successes.Enqueue(Tuple.Create(configToWorkOn, latestEtag));
-                                }
-                                else
-                                {
-                                    if (Log.IsDebugEnabled)
+                                    var cfg = configsToWorkOn.Single(x => x.Name == item.Key.Name);
+                                    if (item.Value.Count == 0)
                                     {
-                                        Log.Debug($"Found no documents of deletes to replicate for configs:  ({string.Join(",", configsToWorkOn.Select(x => x.Name))}). latestEtag wasn't found, therefore status won't be incremented");
+                                        if (lastBatchEtag != null)
+                                            successes.Enqueue(Tuple.Create(cfg, lastBatchEtag));
+                                        else
+                                            waitForWork[i] = true;
+                                        configsToWorkOn.Remove(cfg);
                                     }
-
-                                    waitForWork[i] = true;
                                 }
-
-                                return;
+                                if (configsToWorkOn.Count == 0)
+                                    return;
                             }
+
+                            //if (documents.Count == 0 && deletedDocsByConfig.Sum(x => x.Value.Count) == 0)
+                            //{
+
+                            //    // so we filtered some documents, let us update the etag about that.
+                            //    if (latestEtag != null)
+                            //    {
+                            //        if (Log.IsDebugEnabled)
+                            //        {                                        
+                            //            Log.Debug($"Found no documents of deletes to replicate for configs:  ({string.Join(",",configsToWorkOn.Select(x=>x.Name))}). latestEtag {latestEtag} will be set to successes");
+                            //        }
+
+                            //        foreach (var configToWorkOn in configsToWorkOn)
+                            //            successes.Enqueue(Tuple.Create(configToWorkOn, latestEtag));
+                            //    }
+                            //    else
+                            //    {
+                            //        if (Log.IsDebugEnabled)
+                            //        {
+                            //            Log.Debug($"Found no documents of deletes to replicate for configs:  ({string.Join(",", configsToWorkOn.Select(x => x.Name))}). latestEtag wasn't found, therefore status won't be incremented");
+                            //        }
+
+                            //        waitForWork[i] = true;
+                            //    }
+
+                            //    return;
+                            //}
 
                             var itemsToReplicate = documents.Select(x =>
                             {

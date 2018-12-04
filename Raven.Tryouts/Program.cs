@@ -231,7 +231,7 @@ namespace Raven.Tryouts
 
     public class DTCSqlReplicationTest
     {
-        private const int DocsCount =  1_000;
+        private const int DocsCount =  100_000;
         private const int port = 8079;
 
         public void SqlReplicationTest()
