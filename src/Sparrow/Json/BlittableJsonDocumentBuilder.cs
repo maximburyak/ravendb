@@ -105,6 +105,15 @@ namespace Sparrow.Json
             _tokensCache = _cacheItem.TokensCache;            
         }
 
+        ~BlittableJsonDocumentBuilder()
+        {
+            _debugTag = null;
+
+            _continuationState.Clear();
+            _cacheItem.Reset();
+
+        }
+
         public BlittableJsonDocumentBuilder(
             JsonOperationContext context, 
             UsageMode mode, string debugTag, 
@@ -170,6 +179,8 @@ namespace Sparrow.Json
 
             _writer.Dispose();
             GlobalCache.Free(_cacheItem);
+            GC.SuppressFinalize(this);
+
         }
 
         private bool ReadInternal<TWriteStrategy>() where TWriteStrategy : IWriteStrategy

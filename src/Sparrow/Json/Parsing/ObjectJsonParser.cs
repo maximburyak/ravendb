@@ -196,13 +196,21 @@ namespace Sparrow.Json.Parsing
             _ctx = ctx;
         }
 
-        public void Dispose()
+        ~ObjectJsonParser()
         {
+            _elements.Clear();
+            _seenValues.Clear();
+        }
+
+        public void Dispose()
+        {            
             if (_disposed)
                 return;
             _disposed = true;
             if (_currentStateBuffer != null)
                 _ctx.ReturnMemory(_currentStateBuffer);
+
+            GC.SuppressFinalize(this);
         }
 
         public bool Read()

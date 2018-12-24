@@ -26,6 +26,8 @@ namespace Sparrow.Json
 
         private class ContextStack : StackHeader<T>, IDisposable
         {
+            public bool IsDisposed => Head == HeaderDisposed;
+            
             ~ContextStack()
             {
                 if (Environment.HasShutdownStarted)
@@ -33,7 +35,14 @@ namespace Sparrow.Json
 
                 try
                 {
-                    DisposeOfContexts();
+                    var current = Interlocked.Exchange(ref Head, HeaderDisposed);
+                    StackNode<T> temp;
+                    while (current != null)
+                    {
+                        temp = current;                        
+                        current = current.Next;
+                        temp.Next = null;                        
+                    }
                 }
                 catch (ObjectDisposedException)
                 {
@@ -161,6 +170,9 @@ namespace Sparrow.Json
             while (true)
             {
                 var current = stack.Head;
+
+                if (stack.IsDisposed)
+                    break;
                 if (current == null)
                     break;
                 if (Interlocked.CompareExchange(ref stack.Head, current.Next, current) != current)
@@ -196,6 +208,8 @@ namespace Sparrow.Json
                 if (Parent == null)
                     return;// disposed already
 
+                GC.SuppressFinalize(this);
+
                 if (Context.DoNotReuse)
                 {
                     Context.Dispose();
@@ -212,6 +226,19 @@ namespace Sparrow.Json
                 Parent = null;
                 Context = null;
             }
+
+#if DEBUG2
+            ~ReturnRequestContext()
+            {
+                try
+                {
+                    Dispose();
+                }
+                catch (ObjectDisposedException ex)
+                {                    
+                }
+            }
+#endif
 
         }
 

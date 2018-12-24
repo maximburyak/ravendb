@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Threading;
 using Sparrow.Binary;
 using Sparrow.Global;
 using Sparrow.LowMemory;
@@ -119,7 +120,7 @@ namespace Sparrow.Json
                 var section = _freed[index];
                 _freed[index] = section->Previous;
 
-                allocation = new AllocatedMemoryData
+                allocation = new AllocatedMemoryData(this.Return)
                 {
                     Address = (byte*)section,
                     SizeInBytes = section->SizeInBytes
@@ -132,7 +133,7 @@ namespace Sparrow.Json
                 GrowArena(size);
             }
 
-            allocation = new AllocatedMemoryData
+            allocation = new AllocatedMemoryData(this.Return)
             {
                 SizeInBytes = size,
                 Address = _ptrCurrent
@@ -293,7 +294,7 @@ namespace Sparrow.Json
         {
             try
             {
-                Dispose();
+                Dispose(false);
             }
             catch (ObjectDisposedException)
             {
@@ -309,10 +310,17 @@ namespace Sparrow.Json
 
         public void Dispose()
         {
+            Dispose(true);
+        }
+        public void Dispose(bool disposing)
+        {
             if (!_isDisposed.Raise())
                 return;
 
-            lock (this)
+            if (disposing)
+                Monitor.Enter(this);
+
+            try
             {
                 if (_olderBuffers != null)
                 {
@@ -330,6 +338,11 @@ namespace Sparrow.Json
 
                 GC.SuppressFinalize(this);
             }
+            finally
+            {
+                if (disposing)
+                    Monitor.Exit(this);
+            }            
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -337,6 +350,7 @@ namespace Sparrow.Json
         {
             if (_isDisposed)
                 return;
+            GC.SuppressFinalize(allocation);
 
             var address = allocation.Address;
 #if DEBUG
@@ -413,6 +427,8 @@ namespace Sparrow.Json
         public bool IsLongLived;
         public bool IsReturned;
         private byte* _address;
+        private readonly Action<AllocatedMemoryData> _returner;
+
         public byte* Address
         {
             get
@@ -435,6 +451,31 @@ namespace Sparrow.Json
 
                 _address = value;
             }
+        }
+
+        public AllocatedMemoryData(Action<AllocatedMemoryData> returner)
+        {
+            _returner = returner;
+        }
+
+        ~AllocatedMemoryData()
+        {
+            try
+            {
+                // no point trying to free this memory data if parent context generation already incremented or memory was already returned
+                if (IsLongLived == false &&
+                    Parent != null &&
+                    ContextGeneration != Parent.Generation ||
+                    IsReturned)
+                    return;
+
+                _returner(this);
+            }
+#pragma warning disable RDB0004 // Exception handler is empty or just logging
+            catch (ObjectDisposedException)
+            {
+            }
+#pragma warning restore RDB0004 // Exception handler is empty or just logging
         }
 
         private void ThrowObjectDisposedException()

@@ -433,7 +433,10 @@ namespace Sparrow
         {
             try
             {
-                Dispose();
+                if (Segment == null)
+                    return;
+                NativeMemory.Free(Segment, Size, _thread);
+                Segment = null;
             }
             catch (ObjectDisposedException)
             {
@@ -606,17 +609,14 @@ namespace Sparrow
                     return; // no need
 
                 var current = Interlocked.Exchange(ref Head, HeaderDisposed);
+                StackNode<UnmanagedGlobalSegment> temp;
                 try
                 {
                     while (current != null)
                     {
-                        var segment = current.Value;
+                        temp = current;                        
                         current = current.Next;
-                        if (segment == null)
-                            continue;
-                        if (!segment.InUse.Raise())
-                            continue;
-                        segment.Dispose();
+                        temp.Next = null;                        
                     }
                 }
                 catch (ObjectDisposedException)
@@ -1562,15 +1562,8 @@ namespace Sparrow
         ~ByteStringContext()
         {
             _isFinalizerThread = true;
-            try
-            {
-                Dispose();
-            }
-            catch (ObjectDisposedException)
-            {
-                // This is expected, we might be calling the finalizer on an object that
-                // was already disposed, we don't want to error here because of this
-            }
+            _wholeSegments.Clear();
+            _internalReadyToUseMemorySegments.Clear();
         }
 
         public void Dispose()

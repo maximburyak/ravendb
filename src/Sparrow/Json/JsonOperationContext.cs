@@ -313,6 +313,35 @@ namespace Sparrow.Json
             return new JsonOperationContext(4096, 1024, SharedMultipleUseFlag.None);
         }
 
+        bool finalized = false;
+        ~JsonOperationContext()
+        {
+            finalized = true;
+            _tempBuffer = null;
+
+            _arenaAllocatorForLongLivedValues = null;
+
+            _fieldNames.Clear();
+            CachedProperties = null; // need to release this so can be collected
+
+
+            if (_pooledArrays != null)
+            {
+                foreach (var pooledTypesKVP in _pooledArrays)
+                {
+                    foreach (var pooledArraysOfCurrentType in pooledTypesKVP.Value.Array)
+                    {
+                        pooledTypesKVP.Value.Releaser(pooledArraysOfCurrentType);
+                    }
+                }
+
+                _pooledArrays = null;
+            }
+
+            _managedBuffers?.Clear();
+            _managedBuffers = null;
+        }
+
         public JsonOperationContext(int initialSize, int longLivedSize, SharedMultipleUseFlag lowMemoryFlag)
         {
             Debug.Assert(lowMemoryFlag != null);
@@ -322,7 +351,7 @@ namespace Sparrow.Json
                 ElectricFencedMemory.DecrementConext();
                 ElectricFencedMemory.UnRegisterContextAllocation(this);
 #endif
-
+                disposeStack = Environment.StackTrace;
                 Reset(true);
 
                 _documentBuilder.Dispose();
@@ -381,7 +410,7 @@ namespace Sparrow.Json
             {
                 _buffer = buffer;
                 _parent = parent;
-            }
+            }  
 
             public void Dispose()
             {
@@ -394,6 +423,15 @@ namespace Sparrow.Json
                     ThrowParentWasDisposed();
 
                 _parent._managedBuffers.Push(_buffer);
+                _buffer = null;
+            }
+            
+            public void Kill()
+            {
+                if (_buffer == null || _parent.Disposed)
+                    return;
+
+                _parent?._managedBuffers?.Push(_buffer);
                 _buffer = null;
             }
 
@@ -940,14 +978,17 @@ namespace Sparrow.Json
                 builder?.Dispose();
             }
         }
-
+        string disposeStack = string.Empty;
         private void ThrowObjectDisposed()
         {
-            throw new ObjectDisposedException(nameof(JsonOperationContext));
+            throw new ObjectDisposedException(nameof(JsonOperationContext) + " " +finalized.ToString() + "\n" + disposeStack);
         }
 
         protected internal virtual void Renew()
         {
+            if (Disposed)
+                ThrowObjectDisposed();
+
             _arenaAllocator.RenewArena();
             if (_arenaAllocatorForLongLivedValues == null)
             {
@@ -977,7 +1018,7 @@ namespace Sparrow.Json
                 {
                     _arenaAllocatorForLongLivedValues.Return(mem.AllocatedMemoryData);
                     mem.AllocatedMemoryData = null;
-                    mem.Dispose();
+                    mem.Dispose(); // todo: probably we don't need this call
                 }
 
                 _arenaAllocatorForLongLivedValues = null;
