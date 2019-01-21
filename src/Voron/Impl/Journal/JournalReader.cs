@@ -19,6 +19,7 @@ namespace Voron.Impl.Journal
         private readonly HashSet<long> _modifiedPages;
         private readonly long _lastSyncedTransactionId;
         private long _readAt4Kb;
+        internal long journalNumber;
         private readonly DiffApplier _diffApplier = new DiffApplier();
         private readonly long _journalPagerNumberOfAllocated4Kb;
         private readonly List<EncryptionBuffer> _encryptionBuffers;
@@ -120,6 +121,15 @@ namespace Voron.Impl.Journal
                 Memory.Set(outputPage, 0, (long)numberOfPages * Constants.Storage.PageSize);
                 Memory.Copy(outputPage, (byte*)current + sizeof(TransactionHeader), current->UncompressedSize);
                 pageInfoPtr = (TransactionHeaderPageInfo*)outputPage;
+            }
+
+            if(WriteAheadJournal.val.TryGetValue((_dataPager.FileName.FullPath, current->TransactionId), out var existing))
+            {
+                var now = Hashing.XXHash64.Calculate((byte*)current, (ulong)current->CompressedSize);
+                if(now != existing)
+                {
+                    Console.WriteLine("The checksum is inconsistent!");
+                }
             }
 
             long totalRead = sizeof(TransactionHeaderPageInfo) * current->PageCount;

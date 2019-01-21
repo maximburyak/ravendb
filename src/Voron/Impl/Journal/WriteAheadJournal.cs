@@ -26,11 +26,15 @@ using Voron.Impl.Paging;
 using Voron.Util;
 using Voron.Global;
 using System.Buffers;
+using System.Collections.Concurrent;
 
 namespace Voron.Impl.Journal
 {
     public unsafe class WriteAheadJournal : IDisposable
     {
+
+        public static ConcurrentDictionary<(string, long), ulong> val = new ConcurrentDictionary<(string, long), ulong>();
+
         private readonly StorageEnvironment _env;
         private readonly AbstractPager _dataPager;
 
@@ -191,7 +195,8 @@ namespace Voron.Impl.Journal
                     var transactionHeader = txHeader->TransactionId == 0 ? null : txHeader;
                     using (
                         var journalReader = new JournalReader(pager, _dataPager, recoveryPager, modifiedPages, lastSyncedTransactionId,
-                            transactionHeader))
+                            transactionHeader)
+                        { journalNumber = journalNumber })
                     {
                         var transactionHeaders = ArrayPool<TransactionHeader>.Shared.Rent((int)journalReader.NumberOfAllocated4Kb);
                         try
@@ -1298,12 +1303,14 @@ namespace Voron.Impl.Journal
             }
         }
 
+
         public CompressedPagesResult WriteToJournal(LowLevelTransaction tx, out string journalFilePath)
         {
             lock (_writeLock)
             {
                 var sp = Stopwatch.StartNew();
                 var journalEntry = PrepareToWriteToJournal(tx);
+
                 if (_logger.IsInfoEnabled)
                 {
                     _logger.Info($"Preparing to write tx {tx.Id} to journal with {journalEntry.NumberOfUncompressedPages:#,#} pages ({(journalEntry.NumberOfUncompressedPages * Constants.Storage.PageSize) / Constants.Size.Kilobyte:#,#} kb) in {sp.Elapsed} with {Math.Round(journalEntry.NumberOf4Kbs * 4d, 1):#,#.#;;0} kb compressed.");
@@ -1338,9 +1345,16 @@ namespace Voron.Impl.Journal
                     _lazyTransactionBuffer?.WriteBufferToFile(CurrentFile, tx);
                     CurrentFile = null;
                 }
+                ulong b = Hashing.XXHash64.Calculate(journalEntry.Base, (ulong)journalEntry.NumberOf4Kbs * 4096);
+
+                if(b != a)
+                {
+                    Console.WriteLine("WOWOWOWO");
+                }
 
                 ZeroCompressionBufferIfNeeded(tx);
                 ReduceSizeOfCompressionBufferIfNeeded();
+
 
                 return journalEntry;
             }
@@ -1556,8 +1570,14 @@ namespace Voron.Impl.Journal
             if (_env.Options.EncryptionEnabled)
                 EncryptTransaction(txHeaderPtr);
 
+            a = Hashing.XXHash64.Calculate(prepreToWriteToJournal.Base, (ulong)prepreToWriteToJournal.NumberOf4Kbs * 4096);
+
+            val[(_dataPager.FileName.FullPath, tx.Id)] = a;
+
             return prepreToWriteToJournal;
         }
+
+        ulong a;
 
         internal static readonly byte[] Context = Encoding.UTF8.GetBytes("Txn-Acid");
 
