@@ -73,7 +73,7 @@ namespace Tryouts2
 
                 var oldSize = StorageCompactionTestsSlow.GetDirSize(new DirectoryInfo(path));
 
-                WriteAheadJournal._globalDic.Clear();
+               // WriteAheadJournal._globalDic.Clear();
 
                 var compactOperation = store.Maintenance.Server.Send(new CompactDatabaseOperation(new CompactSettings
                 {
@@ -122,7 +122,7 @@ namespace Tryouts2
             //467771263
             for (var i=0; i<1000; i++)
              {
-                WriteAheadJournal._globalDic.Clear();
+              //  WriteAheadJournal._globalDic.Clear();
                  Console.WriteLine(i);
                  var failed = false;
                 //WriteAheadJournal.val.Clear();
