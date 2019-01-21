@@ -8,6 +8,8 @@ using Sparrow.Utils;
 using Voron.Data;
 using Voron.Global;
 using Voron.Impl.Paging;
+using System.IO.Compression;
+using System.Runtime.InteropServices;
 
 namespace Voron.Impl.Journal
 {
@@ -19,7 +21,6 @@ namespace Voron.Impl.Journal
         private readonly HashSet<long> _modifiedPages;
         private readonly long _lastSyncedTransactionId;
         private long _readAt4Kb;
-        internal long journalNumber;
         private readonly DiffApplier _diffApplier = new DiffApplier();
         private readonly long _journalPagerNumberOfAllocated4Kb;
         private readonly List<EncryptionBuffer> _encryptionBuffers;
@@ -90,6 +91,11 @@ namespace Voron.Impl.Journal
             
             TransactionHeaderPageInfo* pageInfoPtr;
             byte* outputPage;
+            if (!performDecompression)
+            {
+                Console.WriteLine("WTF 3");
+                Console.ReadKey();
+            }
             if (performDecompression)
             {
                 var numberOfPages = GetNumberOfPagesFor(current->UncompressedSize);
@@ -100,8 +106,70 @@ namespace Voron.Impl.Journal
 
                 try
                 {
+                    // Console.WriteLine($"compressed: {current->CompressedSize}; pos: {stream.Position}; offset: {offset}");
+
                     LZ4.Decode64LongBuffers((byte*)current + sizeof(TransactionHeader), current->CompressedSize, outputPage,
                         current->UncompressedSize, true);
+
+                    //  Memory.Copy(outputPage, (byte*)current + sizeof(TransactionHeader), current->CompressedSize);
+
+
+                    if (WriteAheadJournal._globalDic.TryGetValue(current->Hash, out var vals) == false)
+                    {
+                        Console.WriteLine("WTF 4");
+                        Console.ReadKey();
+                    }
+
+                    if (vals.Item5 == false)
+                    {
+                        var vals2 = new Tuple<IntPtr, IntPtr, int, int, bool>(vals.Item1, vals.Item2, vals.Item3, vals.Item4, true);
+                        WriteAheadJournal._globalDic.TryRemove(current->Hash, out var _);
+                        WriteAheadJournal._globalDic[current->Hash] = vals2;
+                    }
+                    else
+                    {
+                        Console.WriteLine(current->Hash + " PAMAYIM!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+                        Console.ReadKey();
+                    }
+
+                    if (vals.Item3 != (int)current->CompressedSize)
+                    {
+                        Console.WriteLine("WTF 7");
+                        Console.ReadKey();
+                    }
+
+                    if (vals.Item4 != (int)current->UncompressedSize)
+                    {
+                        Console.WriteLine("WTF 8");
+                        Console.ReadKey();
+                    }
+
+                    var cmp1 = Memory.Compare((byte*)vals.Item1.ToPointer(), (byte*)current + sizeof(TransactionHeader), (int)current->CompressedSize);
+                    var cmp2 = Memory.Compare((byte*)vals.Item2.ToPointer(), outputPage, (int)current->UncompressedSize);
+
+                    if (cmp1 != 0)
+                    {
+                        Console.WriteLine("WTF 5");
+                        Console.ReadKey();
+                    }
+
+                    if (cmp2 != 0)
+                    {
+                        Console.WriteLine("WTF 6");
+                        Console.ReadKey();
+                    }
+
+                    //Marshal.FreeHGlobal(vals.Item1);
+                    //Marshal.FreeHGlobal(vals.Item2);
+
+
+                    //if (WriteAheadJournal._globalDic.TryRemove(current->Hash, out var _) == false)
+                    //{
+                    //    Console.WriteLine("WTF 19");
+                    //    Console.ReadKey();
+                    //}
+
+
                 }
                 catch (Exception e)
                 {
@@ -121,15 +189,6 @@ namespace Voron.Impl.Journal
                 Memory.Set(outputPage, 0, (long)numberOfPages * Constants.Storage.PageSize);
                 Memory.Copy(outputPage, (byte*)current + sizeof(TransactionHeader), current->UncompressedSize);
                 pageInfoPtr = (TransactionHeaderPageInfo*)outputPage;
-            }
-
-            if(WriteAheadJournal.val.TryGetValue((_dataPager.FileName.FullPath, current->TransactionId), out var existing))
-            {
-                var now = Hashing.XXHash64.Calculate((byte*)current, (ulong)current->CompressedSize);
-                if(now != existing)
-                {
-                    Console.WriteLine("The checksum is inconsistent!");
-                }
             }
 
             long totalRead = sizeof(TransactionHeaderPageInfo) * current->PageCount;

@@ -3,6 +3,8 @@ using Sparrow.Global;
 using System.Runtime.InteropServices;
 using Sparrow.Binary;
 using System.Runtime.CompilerServices;
+using System.IO;
+using System.IO.Compression;
 
 namespace Sparrow.Compression
 {
@@ -113,7 +115,31 @@ namespace Sparrow.Compression
                 int inputLength,
                 int outputLength,
                 int acceleration = ACCELERATION_DEFAULT)
-        {
+        {            
+            //var inputArr = new byte[inputLength];
+            //fixed (byte* ptr = inputArr)
+            //{
+            //    Memory.Copy(ptr, input, inputLength);
+            //}
+
+            //var stream = new MemoryStream();
+            //using (var gz = new GZipStream(stream, CompressionMode.Compress, leaveOpen: true))
+            //{
+            //    gz.Write(inputArr, 0, inputLength);
+            //    gz.Flush();
+            //}
+            //stream.Flush();
+            //var arr = stream.ToArray();
+            //int rc = arr.Length;
+
+            //fixed (byte* ptr = arr)
+            //{
+            //    Memory.Copy(output, ptr, rc);
+            //}
+
+            //return rc;
+
+
             if (acceleration < 1)
                 acceleration = ACCELERATION_DEFAULT;
 
@@ -575,6 +601,37 @@ namespace Sparrow.Compression
             int outputLength,
             bool knownOutputLength)
         {
+            //var outputArr = new byte[outputLength];
+            //var inputArr = new byte[inputLength];
+            //fixed (byte* ptr = inputArr)
+            //{
+            //    Memory.Copy(ptr, input, inputLength);
+            //}
+
+            //var totalRead = 0;
+            //var read = 0;
+            //var stream = new MemoryStream(inputArr);
+            //using (var gz = new GZipStream(stream, CompressionMode.Decompress, leaveOpen: true))
+            //{
+            //    do
+            //    {
+            //        read = gz.Read(outputArr, totalRead, inputLength - totalRead);
+            //        totalRead += read;
+            //    } while (read > 0);
+            //}
+            //stream.Flush();
+            //fixed (byte* ptr = outputArr)
+            //{
+            //    Memory.Copy(output, ptr, totalRead);
+            //}
+            //stream.Dispose();
+            //if (knownOutputLength && totalRead != outputLength)
+            //{
+            //   ThrowException(new ArgumentException($"{totalRead} , {outputLength} == GZIP P PP P  LZ4 block is corrupted, or invalid length has been given."));
+            //}
+
+            //return totalRead;
+
             if (knownOutputLength)
             {
                 var length = LZ4_decompress_generic<EndOnInputSize, Full, NoDict>(input, output, inputLength, outputLength, 0, output, null, 0);

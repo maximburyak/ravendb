@@ -26,15 +26,17 @@ using Voron.Impl.Paging;
 using Voron.Util;
 using Voron.Global;
 using System.Buffers;
+using System.IO.Compression;
+using static Sparrow.Hashing;
+using System.Runtime.InteropServices;
 using System.Collections.Concurrent;
 
 namespace Voron.Impl.Journal
 {
     public unsafe class WriteAheadJournal : IDisposable
     {
-
-        public static ConcurrentDictionary<(string, long), ulong> val = new ConcurrentDictionary<(string, long), ulong>();
-
+        public static ConcurrentDictionary<ulong, Tuple<IntPtr, IntPtr, int, int, bool>> _globalDic = new ConcurrentDictionary<ulong, Tuple<IntPtr, IntPtr, int, int, bool>>();
+        
         private readonly StorageEnvironment _env;
         private readonly AbstractPager _dataPager;
 
@@ -195,8 +197,7 @@ namespace Voron.Impl.Journal
                     var transactionHeader = txHeader->TransactionId == 0 ? null : txHeader;
                     using (
                         var journalReader = new JournalReader(pager, _dataPager, recoveryPager, modifiedPages, lastSyncedTransactionId,
-                            transactionHeader)
-                        { journalNumber = journalNumber })
+                            transactionHeader))
                     {
                         var transactionHeaders = ArrayPool<TransactionHeader>.Shared.Rent((int)journalReader.NumberOfAllocated4Kb);
                         try
@@ -1303,14 +1304,12 @@ namespace Voron.Impl.Journal
             }
         }
 
-
         public CompressedPagesResult WriteToJournal(LowLevelTransaction tx, out string journalFilePath)
         {
             lock (_writeLock)
             {
                 var sp = Stopwatch.StartNew();
                 var journalEntry = PrepareToWriteToJournal(tx);
-
                 if (_logger.IsInfoEnabled)
                 {
                     _logger.Info($"Preparing to write tx {tx.Id} to journal with {journalEntry.NumberOfUncompressedPages:#,#} pages ({(journalEntry.NumberOfUncompressedPages * Constants.Storage.PageSize) / Constants.Size.Kilobyte:#,#} kb) in {sp.Elapsed} with {Math.Round(journalEntry.NumberOf4Kbs * 4d, 1):#,#.#;;0} kb compressed.");
@@ -1345,16 +1344,9 @@ namespace Voron.Impl.Journal
                     _lazyTransactionBuffer?.WriteBufferToFile(CurrentFile, tx);
                     CurrentFile = null;
                 }
-                ulong b = Hashing.XXHash64.Calculate(journalEntry.Base, (ulong)journalEntry.NumberOf4Kbs * 4096);
-
-                if(b != a)
-                {
-                    Console.WriteLine("WOWOWOWO");
-                }
 
                 ZeroCompressionBufferIfNeeded(tx);
                 ReduceSizeOfCompressionBufferIfNeeded();
-
 
                 return journalEntry;
             }
@@ -1370,7 +1362,7 @@ namespace Voron.Impl.Journal
                 pagesCountIncludingAllOverflowPages += page.NumberOfPages;
             }
 
-            var performCompression = pagesCountIncludingAllOverflowPages > _env.Options.CompressTxAboveSizeInBytes / Constants.Storage.PageSize;
+            var performCompression = true;//pagesCountIncludingAllOverflowPages > _env.Options.CompressTxAboveSizeInBytes / Constants.Storage.PageSize;
 
             var sizeOfPagesHeader = numberOfPages * sizeof(TransactionHeaderPageInfo);
             var overhead = sizeOfPagesHeader + (long)numberOfPages * sizeof(long);
@@ -1466,7 +1458,10 @@ namespace Voron.Impl.Journal
             var totalSizeWritten = write - txPageInfoPtr;
 
             long compressedLen = 0;
-
+            byte* myinput = null;
+            byte* myoutput = null;
+            int size1 = 0;
+            int size2 = (int)totalSizeWritten;
             if (performCompression)
             {
                 var outputBufferSize = LZ4.MaximumOutputLength(totalSizeWritten);
@@ -1505,12 +1500,52 @@ namespace Voron.Impl.Journal
                 {
                     var compressionAcceleration = _lastCompressionAccelerationInfo.LastAcceleration;
 
+                    var temphash = XXHash64.Calculate(txPageInfoPtr, (ulong)totalSizeWritten, 123);
+
                     compressedLen = LZ4.Encode64LongBuffer(
                         txPageInfoPtr,
                         compressionBuffer,
                         totalSizeWritten,
                         outputBufferSize,
                         compressionAcceleration);
+
+                    //Memory.Copy(compressionBuffer, txPageInfoPtr, totalSizeWritten);
+                    //compressedLen = totalSizeWritten;
+
+                    var temphash2 = XXHash64.Calculate(txPageInfoPtr, (ulong)totalSizeWritten, 123);
+                    // Console.WriteLine($"compressed: {compressedLen}; original: {totalSizeWritten}");                    
+                    if (temphash != temphash2)
+                    {
+                        Console.WriteLine("WTF?");
+                        Console.ReadKey();
+                    }
+
+                    //var myinputarr = new byte[compressedLen];
+                    //var myoutputarr = new byte[totalSizeWritten];
+                    //fixed (byte* myinput = myinputarr)
+                    //fixed (byte* myoutput = myoutputarr)
+                    size1 = (int)compressedLen;
+                    myinput = (byte*)Marshal.AllocHGlobal((int)compressedLen);
+                    myoutput = (byte*)Marshal.AllocHGlobal((int)totalSizeWritten).ToPointer();
+                    {
+                        Memory.Copy(myinput, compressionBuffer, compressedLen);
+                        var decompressedLen = LZ4.Decode64LongBuffers(
+                        myinput,
+                        compressedLen,
+                        myoutput,                        
+                        totalSizeWritten,
+                        true);
+
+                        var cmp = Memory.Compare(myoutput, txPageInfoPtr, (int)totalSizeWritten);
+                        if (cmp != 0)
+                        {
+                            Console.WriteLine("WTF 222" );
+                            Console.ReadKey();
+
+                        }
+                    }
+            
+
 
                     metrics.SetCompressionResults(totalSizeWritten, compressedLen, compressionAcceleration);
                 }
@@ -1557,6 +1592,8 @@ namespace Voron.Impl.Journal
                 txHeader->Hash = 0;
             }
 
+            _globalDic[txHeader->Hash] = new Tuple<IntPtr, IntPtr, int, int, bool>(new IntPtr((void*)myinput), new IntPtr((void*)myoutput), size1, size2, false);
+
             var prepreToWriteToJournal = new CompressedPagesResult
             {
                 Base = txHeaderPtr,
@@ -1570,14 +1607,8 @@ namespace Voron.Impl.Journal
             if (_env.Options.EncryptionEnabled)
                 EncryptTransaction(txHeaderPtr);
 
-            a = Hashing.XXHash64.Calculate(prepreToWriteToJournal.Base, (ulong)prepreToWriteToJournal.NumberOf4Kbs * 4096);
-
-            val[(_dataPager.FileName.FullPath, tx.Id)] = a;
-
             return prepreToWriteToJournal;
         }
-
-        ulong a;
 
         internal static readonly byte[] Context = Encoding.UTF8.GetBytes("Txn-Acid");
 
