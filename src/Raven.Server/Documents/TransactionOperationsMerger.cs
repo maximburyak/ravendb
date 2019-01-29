@@ -337,6 +337,8 @@ namespace Raven.Server.Documents
                 }
                 catch (Exception e) when (e is EarlyOutOfMemoryException || e is OutOfMemoryException)
                 {
+                    Debugger.Launch();
+                    Debugger.Break();
                     // this catch block is meant to handle potentially transient errors
                     // in particular, an OOM error is something that we want to recover
                     // we'll handle this by throwing out all the pending transactions,
@@ -826,7 +828,7 @@ namespace Raven.Server.Documents
                 var modifiedSize = llt.NumberOfModifiedPages * Constants.Storage.PageSize;
 
                 var canCloseCurrentTx = previousOperation == null || previousOperation.IsCompleted;
-                if (canCloseCurrentTx)
+                if (canCloseCurrentTx || llt.Environment.Options.ForceUsing32BitsPager)
                 {
                     if (_operations.IsEmpty)
                         break; // nothing remaining to do, let's us close this work

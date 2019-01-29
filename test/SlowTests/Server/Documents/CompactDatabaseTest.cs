@@ -26,7 +26,7 @@ namespace SlowTests.Server.Documents
             {
                 store.Maintenance.Send(new CreateSampleDataOperation());
 
-                for (int i = 0; i < 3; i++)
+                for (int i = 0; i < 5; i++)
                 {
                     await store.Operations.Send(new PatchByQueryOperation(new IndexQuery
                     {

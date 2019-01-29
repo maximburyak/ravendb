@@ -248,7 +248,7 @@ namespace Voron.Platform.Posix
                 //system didn't succeed in mapping the address where we wanted
                 {
                     var err = Marshal.GetLastWin32Error();
-
+                    // todo: treat oom here as well
                     Syscall.ThrowLastError(err,
                         $"Unable to map {size / Constants.Size.Kilobyte:#,#0} kb starting at {startPage} on {FileName}");
                 }

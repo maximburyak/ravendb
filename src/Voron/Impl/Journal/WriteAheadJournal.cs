@@ -1310,6 +1310,7 @@ namespace Voron.Impl.Journal
             lock (_writeLock)
             {
                 var sp = Stopwatch.StartNew();
+
                 var journalEntry = PrepareToWriteToJournal(tx);
                 if (_logger.IsInfoEnabled)
                 {
@@ -1361,7 +1362,7 @@ namespace Voron.Impl.Journal
             foreach (var page in txPages)
             {
                 pagesCountIncludingAllOverflowPages += page.NumberOfPages;
-            }
+            }            
 
             var performCompression = pagesCountIncludingAllOverflowPages > _env.Options.CompressTxAboveSizeInBytes / Constants.Storage.PageSize;
 
@@ -1371,10 +1372,22 @@ namespace Voron.Impl.Journal
 
             const int transactionHeaderPageOverhead = 1;
             var pagesRequired = (transactionHeaderPageOverhead + pagesCountIncludingAllOverflowPages + overheadInPages);
+                                  
+
+            
+            //if (pagesRequired > 16_000)
+            //{
+            //    int modifiedKB = pagesRequired * 4096;
+            //    var color = Console.ForegroundColor;
+            //    Console.ForegroundColor = ConsoleColor.Red;
+            //    Console.WriteLine(modifiedKB);
+            //    Console.ForegroundColor = color;
+            //}
+
 
             PagerState pagerState;
             try
-            {
+            {                
                 pagerState = _compressionPager.EnsureContinuous(0, pagesRequired);
             }
             catch (InsufficientMemoryException)

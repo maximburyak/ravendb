@@ -23,14 +23,24 @@ namespace Tryouts
     {
         public static void Main(string[] args)
         {
-            using (var test = new AuthenticationClusterTests())
+            Parallel.For(0, 1000, new ParallelOptions
             {
-                test.CanReplaceClusterCert().Wait();
-            }
-            /*using (var test = new AuthenticationLetsEncryptTests())
+                MaxDegreeOfParallelism = 12
+            }, i =>
             {
-                test.CanGetLetsEncryptCertificateAndRenewIt().Wait();
-            }*/
+                Console.WriteLine(i);
+                using (var test = new SlowTests.Server.Documents.CompactDatabaseTest())
+                {
+                    try
+                    {
+                        test.CanCompactDatabase().Wait();
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine(ex);
+                    }
+                }
+            });
         }
     }
 }
