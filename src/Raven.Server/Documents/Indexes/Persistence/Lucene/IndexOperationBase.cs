@@ -4,8 +4,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
-using Lucene.Net.Analysis;
-using Lucene.Net.Search;
 using Raven.Client;
 using Raven.Client.Documents.Indexes;
 using Raven.Server.Documents.Indexes.Persistence.Lucene.Analyzers;
@@ -17,6 +15,7 @@ using Sparrow.Json;
 using Sparrow.Logging;
 using Query = Lucene.Net.Search.Query;
 using Version = Lucene.Net.Util.Version;
+using lucene = Lucene.Net;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Lucene
 {
@@ -36,16 +35,16 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene
             _logger = logger;
         }
 
-        protected static RavenPerFieldAnalyzerWrapper CreateAnalyzer(Func<Analyzer> createDefaultAnalyzer, IndexDefinitionBase indexDefinition, bool forQuerying = false)
+        protected static RavenPerFieldAnalyzerWrapper CreateAnalyzer(Func<lucene.Analysis.Analyzer> createDefaultAnalyzer, IndexDefinitionBase indexDefinition, bool forQuerying = false)
         {
             if (indexDefinition.IndexFields.ContainsKey(Constants.Documents.Indexing.Fields.AllFields))
                 throw new InvalidOperationException($"Detected '{Constants.Documents.Indexing.Fields.AllFields}'. This field should not be present here, because inheritance is done elsewhere.");
 
-            var analyzers = new Dictionary<Type, Analyzer>();
+            var analyzers = new Dictionary<Type, lucene.Analysis.Analyzer>();
 
             var hasDefaultFieldOptions = false;
-            Analyzer defaultAnalyzerToUse = null;
-            Analyzer defaultAnalyzer = null;
+            lucene.Analysis.Analyzer defaultAnalyzerToUse = null;
+            lucene.Analysis.Analyzer defaultAnalyzer = null;
             if (indexDefinition is MapIndexDefinition mid)
             {
                 if (mid.IndexDefinition.Fields.TryGetValue(Constants.Documents.Indexing.Fields.AllFields, out var value))
@@ -55,7 +54,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene
                     switch (value.Indexing)
                     {
                         case FieldIndexing.Exact:
-                            defaultAnalyzerToUse = GetOrCreateAnalyzer(typeof(KeywordAnalyzer), CreateKeywordAnalyzer);
+                            defaultAnalyzerToUse = GetOrCreateAnalyzer(typeof(lucene.Analysis.KeywordAnalyzer), CreateKeywordAnalyzer);
                             break;
                         case FieldIndexing.Search:
                             if (value.Analyzer != null)
@@ -81,7 +80,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene
                 ? new RavenPerFieldAnalyzerWrapper(
                         defaultAnalyzerToUse, 
                         () => GetOrCreateAnalyzer(typeof(RavenStandardAnalyzer), CreateStandardAnalyzer),
-                        () => GetOrCreateAnalyzer(typeof(KeywordAnalyzer), CreateKeywordAnalyzer))
+                        () => GetOrCreateAnalyzer(typeof(lucene.Analysis.KeywordAnalyzer), CreateKeywordAnalyzer))
                 : new RavenPerFieldAnalyzerWrapper(defaultAnalyzerToUse);
 
             foreach (var field in indexDefinition.IndexFields)
@@ -91,7 +90,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene
                 switch (field.Value.Indexing)
                 {
                     case FieldIndexing.Exact:
-                        var keywordAnalyzer = GetOrCreateAnalyzer(typeof(KeywordAnalyzer), CreateKeywordAnalyzer);
+                        var keywordAnalyzer = GetOrCreateAnalyzer(typeof(lucene.Analysis.KeywordAnalyzer), CreateKeywordAnalyzer);
 
                         perFieldAnalyzerWrapper.AddAnalyzer(fieldName, keywordAnalyzer);
                         break;
@@ -128,7 +127,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene
                 perFieldAnalyzerWrapper.AddAnalyzer(fieldName, standardAnalyzer);
             }
 
-            Analyzer GetOrCreateAnalyzer(Type analyzerType, Func<Analyzer> createAnalyzer)
+            lucene.Analysis.Analyzer GetOrCreateAnalyzer(Type analyzerType, Func<lucene.Analysis.Analyzer> createAnalyzer)
             {
                 if (analyzers.TryGetValue(analyzerType, out var analyzer) == false)
                     analyzers[analyzerType] = analyzer = createAnalyzer();
@@ -136,9 +135,9 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene
                 return analyzer;
             }
 
-            KeywordAnalyzer CreateKeywordAnalyzer()
+            lucene.Analysis.KeywordAnalyzer CreateKeywordAnalyzer()
             {
-                return new KeywordAnalyzer();
+                return new lucene.Analysis.KeywordAnalyzer();
             }
 
             RavenStandardAnalyzer CreateStandardAnalyzer()
@@ -149,7 +148,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene
 
         public abstract void Dispose();
 
-        private static Analyzer GetAnalyzer(string name, string analyzer, Dictionary<Type, Analyzer> analyzers, bool forQuerying)
+        private static lucene.Analysis.Analyzer GetAnalyzer(string name, string analyzer, Dictionary<Type, lucene.Analysis.Analyzer> analyzers, bool forQuerying)
         {
             if (string.IsNullOrWhiteSpace(analyzer))
                 return null;
@@ -171,21 +170,25 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene
             return analyzerInstance;
         }
 
-        protected Query GetLuceneQuery(DocumentsOperationContext context, QueryMetadata metadata, BlittableJsonReaderObject parameters, Analyzer analyzer, QueryBuilderFactories factories)
+        protected Query GetLuceneQuery(DocumentsOperationContext context, QueryMetadata metadata, BlittableJsonReaderObject parameters, lucene.Analysis.Analyzer analyzer, QueryBuilderFactories factories)
         {
             return GetLuceneQuery(context, metadata, metadata.Query.Where, parameters, analyzer, factories);
         }
 
-        protected Query GetLuceneQuery(DocumentsOperationContext context, QueryMetadata metadata, QueryExpression whereExpression, BlittableJsonReaderObject parameters, Analyzer analyzer, QueryBuilderFactories factories)
+        protected Query GetLuceneQuery(DocumentsOperationContext context, QueryMetadata metadata, QueryExpression whereExpression, BlittableJsonReaderObject parameters, lucene.Analysis.Analyzer analyzer, QueryBuilderFactories factories)
         {
             Query documentQuery;
 
             if (metadata.Query.Where == null)
-            {
+            {                
                 if (_logger.IsInfoEnabled)
                     _logger.Info($"Issuing query on index {_indexName} for all documents");
 
-                documentQuery = new MatchAllDocsQuery();
+                
+                if (metadata.OrderBy == null)                
+                    documentQuery = new LimitedNumberOfMatchAllDocsQuery { MinPageSize = 1 };
+                else
+                    documentQuery = new lucene.Search.MatchAllDocsQuery();
             }
             else
             {
@@ -239,7 +242,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        protected static int GetPageSize(IndexSearcher searcher, long pageSize)
+        protected static int GetPageSize(lucene.Search.IndexSearcher searcher, long pageSize)
         {
             if (pageSize >= searcher.MaxDoc)
                 return searcher.MaxDoc;

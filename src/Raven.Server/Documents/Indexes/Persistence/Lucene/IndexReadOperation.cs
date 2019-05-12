@@ -135,6 +135,11 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene
 
                     totalResults.Value = search.TotalHits;
 
+                    if (luceneQuery is LimitedNumberOfMatchAllDocsQuery limitedNumberQuery)
+                    {
+                        totalResults.Value = EntriesCount();
+                    }
+
                     scope.RecordAlreadyPagedItemsInPreviousPage(search);
 
                     for (; position < search.ScoreDocs.Length && pageSize > 0; position++)
@@ -407,6 +412,8 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene
 
         private TopDocs ExecuteQuery(Query documentQuery, int start, int pageSize, Sort sort)
         {
+            var minPageSize = GetPageSize(_searcher, (long)pageSize + start);
+
             if (sort == null && _indexHasBoostedFields == false && IsBoostedQuery(documentQuery) == false)
             {
                 if (pageSize == int.MaxValue || pageSize >= _searcher.MaxDoc) // we want all docs, no sorting required
@@ -418,14 +425,18 @@ namespace Raven.Server.Documents.Indexes.Persistence.Lucene
                     }
                 }
 
-                using (var noSortingCollector = new NonSortingCollector(Math.Abs(pageSize + start)))
+                using (var noSortingCollector = new NonSortingCollector(minPageSize))
                 {
+                    if (documentQuery is LimitedNumberOfMatchAllDocsQuery limitedQuery)
+                    {
+                        limitedQuery.MinPageSize = minPageSize;
+                    }
                     _searcher.Search(documentQuery, noSortingCollector, _state);
                     return noSortingCollector.ToTopDocs();
                 }
             }
 
-            var minPageSize = GetPageSize(_searcher, (long)pageSize + start);
+            
 
             if (sort != null)
             {
