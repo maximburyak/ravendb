@@ -25,7 +25,8 @@ using Raven.Server.Rachis;
 using Sparrow.Json;
 using Sparrow.Server;
 using Xunit.Sdk;
-
+using Raven.Client.ServerWide.Commands;
+using Raven.Client.Documents.Commands;
 
 namespace RachisTests
 {
@@ -37,6 +38,156 @@ namespace RachisTests
             public int MaxId;
         }
         private readonly TimeSpan _reasonableWaitTime = Debugger.IsAttached ? TimeSpan.FromSeconds(60 * 10) : TimeSpan.FromSeconds(10);
+
+
+
+        [Theory]
+        [InlineData(1)]
+        [InlineData(5)]
+        [InlineData(10)]
+        [InlineData(20)]
+        public async Task Repro(int batchSize)
+        {
+            const int nodesAmount = 5;
+            var leader = await this.CreateRaftClusterAndGetLeader(nodesAmount);
+
+            var defaultDatabase = "ContinueFromThePointIStoppedRepro";
+
+            await CreateDatabaseInCluster(defaultDatabase, nodesAmount, leader.WebUrl).ConfigureAwait(false);
+                        
+            using (var store = new DocumentStore
+            {
+                Urls = new[] { leader.WebUrl },
+                Database = defaultDatabase
+            }.Initialize())
+            {
+                var sp = Stopwatch.StartNew();                
+
+                await GenerateDocuments(store);
+
+                var reqEx = store.GetRequestExecutor();
+
+                var firstNode = reqEx.Topology.Nodes[0];
+                var lastNode = reqEx.Topology.Nodes[reqEx.Topology.Nodes.Count-1];
+
+                var server = Servers.First(x => x.ServerStore.NodeTag == firstNode.ClusterTag);
+                Console.WriteLine($"Killing {server.WebUrl}");
+                DisposeServerAndWaitForFinishOfDisposal(server);
+
+                Console.WriteLine("First killing " + sp.ElapsedMilliseconds);
+                //await KillServerWhereSubscriptionWorks(defaultDatabase, subscription.SubscriptionName);
+
+                await GenerateDocuments(store);
+
+
+
+
+                server = Servers.First(x => x.ServerStore.NodeTag == lastNode.ClusterTag);
+                Console.WriteLine($"Killing {server.WebUrl}");
+                DisposeServerAndWaitForFinishOfDisposal(server);
+                Console.WriteLine("Second killing " + sp.ElapsedMilliseconds);
+
+                var tasks = new Task[100];
+
+                for (var i = 1; i < 50; i++)
+                {
+                    tasks[i] = Task.Run(async () =>
+                    {
+                        using (reqEx.ContextPool.AllocateOperationContext(out var context))
+                        {
+                            var command = new GetNodeInfoCommand();
+                            await reqEx.ExecuteAsync(command, context, sessionInfo: null, token: CancellationToken.None).ConfigureAwait(false);
+                        }
+                    });
+                }
+
+                tasks[0] = Task.Run(async () => await GenerateDocuments(store));
+
+                for (var i = 50; i < 100; i++)
+                {
+                    tasks[i] = Task.Run(async () =>
+                    {
+                        using (reqEx.ContextPool.AllocateOperationContext(out var context))
+                        {
+                            var command = new GetNodeInfoCommand();
+                            await reqEx.ExecuteAsync(command, context, sessionInfo: null, token: CancellationToken.None).ConfigureAwait(false);
+                        }
+                    });
+                }
+
+            }
+        }
+
+        [Fact]
+        public async Task Repro()
+        {
+            const int nodesAmount = 5;
+            var leader = await this.CreateRaftClusterAndGetLeader(nodesAmount);
+
+            var defaultDatabase = "ContinueFromThePointIStopped";
+
+            await CreateDatabaseInCluster(defaultDatabase, nodesAmount, leader.WebUrl).ConfigureAwait(false);
+
+            string tag1, tag2, tag3;
+            using (var store = new DocumentStore
+            {
+                Urls = new[] { leader.WebUrl },
+                Database = defaultDatabase
+            }.Initialize())
+            {
+                var reqEx = store.GetRequestExecutor();
+
+                Topology topology = null;
+
+                while (reqEx.Topology == null)
+                    await Task.Delay(100);
+                topology = reqEx.Topology;
+                var serverNode1 = topology.Nodes[0];
+                await reqEx.UpdateTopologyAsync(
+                    node: serverNode1,
+                    timeout: 10_000);
+                var node1 = Servers.First(x => x.WebUrl.Equals(serverNode1.Url, StringComparison.InvariantCultureIgnoreCase));
+                await DisposeServerAndWaitForFinishOfDisposalAsync(node1);
+                Console.WriteLine("Killed 1");
+                var serverNode2 = topology.Nodes[1];
+                var node2 = Servers.First(x => x.WebUrl.Equals(serverNode2.Url, StringComparison.InvariantCultureIgnoreCase));
+                await DisposeServerAndWaitForFinishOfDisposalAsync(node2);
+                Console.WriteLine("Killed 2");
+
+                Console.WriteLine($@"Req ex Id: {reqEx.ID}
+node selector id: {reqEx._nodeSelector.ID}");
+
+                using (reqEx.ContextPool.AllocateOperationContext(out var context))
+                {
+                    var command = new GetDocumentsCommand(0, 1);
+                    Console.WriteLine($"We will be running commadn {command.ID}");
+                    var task = reqEx.ExecuteAsync(command, context);
+
+                    var mre = new ManualResetEvent(false);
+
+                    reqEx.FailedRequest += (x, y) =>
+                    {
+                        mre.WaitOne();
+                    };
+                    
+                    while (command.FailedNodes == null || command.FailedNodes.Count == 0)
+                        await Task.Delay(100);
+                    Console.WriteLine($"Failed nodes count: {command.FailedNodes.Count}");
+                    Console.WriteLine("Waiting for update topology");
+                    while (await reqEx.UpdateTopologyAsync(topology.Nodes[3], 10_000,forceUpdate: true) == false ||
+                        reqEx.Topology.Etag == topology.Etag)
+                    {
+                        await Task.Delay(100);
+                    }
+
+                    mre.Set();
+                    Console.WriteLine("Waiting for task");
+                    await task;
+
+                    Console.WriteLine($"Failed tasks: {string.Join(',', command.FailedNodes.Select(x=>x.Key.Url))}");
+                }
+            }
+        }
 
         [Theory]
         [InlineData(1)]
@@ -64,21 +215,21 @@ namespace RachisTests
 
                 await GenerateDocuments(store);
 
-                var subscription = await CreateAndInitiateSubscription(store, defaultDatabase, usersCount, reachedMaxDocCountMre, batchSize);
-                
-
-                Assert.True(await reachedMaxDocCountMre.WaitAsync(_reasonableWaitTime), $"Reached {usersCount.Count}/10");
+                (var subscription, var subsTask) = await CreateAndInitiateSubscription(store, defaultDatabase, usersCount, reachedMaxDocCountMre, batchSize);
+             
+                Assert.True(await Task.WhenAny(subsTask, reachedMaxDocCountMre.WaitAsync()).WaitAsync(_reasonableWaitTime), $"Reached {usersCount.Count}/10");
 
                 tag1 = subscription.CurrentNodeTag;
 
                 usersCount.Clear();
                 reachedMaxDocCountMre.Reset();
-
-                await KillServerWhereSubscriptionWorks(defaultDatabase, subscription.SubscriptionName);
+                var sp = Stopwatch.StartNew();
+                Console.WriteLine("First killing " + sp.ElapsedMilliseconds);
+                await KillServerWhereSubscriptionWorks(defaultDatabase, subscription.SubscriptionName, CancellationToken.None);
 
                 await GenerateDocuments(store);
 
-                Assert.True(await reachedMaxDocCountMre.WaitAsync(_reasonableWaitTime), $"Reached {usersCount.Count}/10");
+                Assert.True(await Task.WhenAny(subsTask, reachedMaxDocCountMre.WaitAsync()).WaitAsync(_reasonableWaitTime), $"Reached {usersCount.Count}/10");
 
                 tag2 = subscription.CurrentNodeTag;
 
@@ -86,11 +237,25 @@ namespace RachisTests
                 usersCount.Clear();
                 reachedMaxDocCountMre.Reset();
 
-                await KillServerWhereSubscriptionWorks(defaultDatabase, subscription.SubscriptionName);
+                Console.WriteLine("Second killing " + sp.ElapsedMilliseconds);
+                
+                await KillServerWhereSubscriptionWorks(defaultDatabase, subscription.SubscriptionName, CancellationToken.None);
 
+                
                 await GenerateDocuments(store);
 
-                Assert.True(await reachedMaxDocCountMre.WaitAsync(_reasonableWaitTime), $"Reached {usersCount.Count}/10");
+                try
+                {
+
+                    Assert.True(await Task.WhenAny(subsTask, reachedMaxDocCountMre.WaitAsync()).WaitAsync(_reasonableWaitTime), $"Reached {usersCount.Count}/10");
+                    ;
+                }
+                catch (Exception ex)
+                {
+                    Debugger.Launch();
+                    Debugger.Break();
+
+                }
 
                 tag3 = subscription.CurrentNodeTag;
                 // Assert.NotEqual(tag1, tag3);
@@ -223,14 +388,14 @@ namespace RachisTests
 
                 await GenerateDocuments(store);
 
-                var subscription = await CreateAndInitiateSubscription(store, defaultDatabase, usersCount, reachedMaxDocCountMre, 20, mentor: mentor);
+                (var subscription, var subsTask) = await CreateAndInitiateSubscription(store, defaultDatabase, usersCount, reachedMaxDocCountMre, 20, mentor: mentor);
                 
                 Assert.True(await reachedMaxDocCountMre.WaitAsync(_reasonableWaitTime), $"Reached {usersCount.Count}/10");
 
                 usersCount.Clear();
                 reachedMaxDocCountMre.Reset();
 
-                await KillServerWhereSubscriptionWorks(defaultDatabase, subscription.SubscriptionName);
+                await KillServerWhereSubscriptionWorks(defaultDatabase, subscription.SubscriptionName, CancellationToken.None);
 
                 await GenerateDocuments(store);
 
@@ -242,7 +407,7 @@ namespace RachisTests
                 usersCount.Clear();
                 reachedMaxDocCountMre.Reset();
 
-                await KillServerWhereSubscriptionWorks(defaultDatabase, subscription.SubscriptionName);
+                await KillServerWhereSubscriptionWorks(defaultDatabase, subscription.SubscriptionName, CancellationToken.None);
 
                 await GenerateDocuments(store);
 
@@ -350,7 +515,7 @@ namespace RachisTests
                 Assert.True(await ackSent.WaitAsync(_reasonableWaitTime).ConfigureAwait(false), $"Doc count is {docsCount} with revisions {revisionsCount}/{expectedRevisionsCount} (1st assert)");
                 ackSent.Reset(true);
 
-                await KillServerWhereSubscriptionWorks(defaultDatabase, subscription.SubscriptionName).ConfigureAwait(false);
+                await KillServerWhereSubscriptionWorks(defaultDatabase, subscription.SubscriptionName, CancellationToken.None).ConfigureAwait(false);
                 continueMre.Set();
                 expectedRevisionsCount += 2;
 
@@ -360,7 +525,7 @@ namespace RachisTests
 
                 expectedRevisionsCount = (int)Math.Pow(nodesAmount, 2);
                 if (nodesAmount == 5)
-                    await KillServerWhereSubscriptionWorks(defaultDatabase, subscription.SubscriptionName);
+                    await KillServerWhereSubscriptionWorks(defaultDatabase, subscription.SubscriptionName, CancellationToken.None);
 
                 Assert.True(await reachedMaxDocCountMre.WaitAsync(_reasonableWaitTime).ConfigureAwait(false), $"Doc count is {docsCount} with revisions {revisionsCount}/{expectedRevisionsCount} (3rd assert)");
             }
@@ -513,7 +678,7 @@ namespace RachisTests
             }
         }
 
-        private async Task<SubscriptionWorker<User>> CreateAndInitiateSubscription(IDocumentStore store, string defaultDatabase, List<User> usersCount, AsyncManualResetEvent reachedMaxDocCountMre, int batchSize, string mentor = null)
+        private async Task<(SubscriptionWorker<User> worker, Task subsTask)> CreateAndInitiateSubscription(IDocumentStore store, string defaultDatabase, List<User> usersCount, AsyncManualResetEvent reachedMaxDocCountMre, int batchSize, string mentor = null)
         {
             var proggress = new SubscriptionProggress()
             {
@@ -526,7 +691,7 @@ namespace RachisTests
 
             var subscription = store.Subscriptions.GetSubscriptionWorker<User>(new SubscriptionWorkerOptions(subscriptionName)
             {
-                TimeToWaitBeforeConnectionRetry = TimeSpan.FromMilliseconds(500),
+                TimeToWaitBeforeConnectionRetry = TimeSpan.FromMilliseconds(500),                
                 MaxDocsPerBatch = batchSize
                 
             });
@@ -544,55 +709,77 @@ namespace RachisTests
                 Assert.Equal(mentor, record.Topology.WhoseTaskIsIt(RachisState.Follower, subscripitonState, null));
             }
 
+            subscription.AfterAcknowledgment += b =>
+            {
+                try
+                {
+                    foreach (var item in b.Items)
+                    {
+                        var x = item.Result;
+                        int curId = 0;
+                        var afterSlash = x.Id.Substring(x.Id.LastIndexOf("/", StringComparison.OrdinalIgnoreCase) + 1);
+                        curId = int.Parse(afterSlash.Substring(0, afterSlash.Length - 2));
+                        Assert.True(curId >= proggress.MaxId);
+                        usersCount.Add(x);
+                        proggress.MaxId = curId;
+                    }
+                    if (usersCount.Count == 10)
+                    {
+                        reachedMaxDocCountMre.Set();
+                    }
+                }
+                catch (Exception)
+                {
+
+
+                }
+                return Task.CompletedTask;
+            };
+
             var task = subscription.Run(a =>
             {
-                foreach (var item in a.Items)
-                {
-                    var x = item.Result;
-                    int curId = 0;
-                    var afterSlash = x.Id.Substring(x.Id.LastIndexOf("/", StringComparison.OrdinalIgnoreCase) + 1);
-                    curId = int.Parse(afterSlash.Substring(0, afterSlash.Length - 2));
-                    Assert.True(curId >= proggress.MaxId);
-                    usersCount.Add(x);
-                    proggress.MaxId = curId;
-                }
+                
             });
-            subscription.AfterAcknowledgment += b =>
-           {
-               try
-               {
-                   if (usersCount.Count == 10)
-                   {
-                       reachedMaxDocCountMre.Set();
-                   }
-               }
-               catch (Exception)
-               {
+           
 
+            //await Task.WhenAny(task, Task.Delay(_reasonableWaitTime)).ConfigureAwait(false);
 
-               }
-               return Task.CompletedTask;
-           };
-
-            await Task.WhenAny(task, Task.Delay(_reasonableWaitTime)).ConfigureAwait(false);
-
-            return subscription;
+            return (subscription, task);
         }
 
-        private async Task KillServerWhereSubscriptionWorks(string defaultDatabase, string subscriptionName)
+        private async Task KillServerWhereSubscriptionWorks(string defaultDatabase, string subscriptionName, CancellationToken ct)
         {
-            string tag = null;
-            var someServer = Servers.First(x => x.Disposed == false);
-            using (someServer.ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
-            using (context.OpenReadTransaction())
+            while (true)
             {
-                var databaseRecord = someServer.ServerStore.Cluster.ReadDatabase(context, defaultDatabase);
-                var db = await someServer.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(defaultDatabase).ConfigureAwait(false);
-                var subscriptionState = db.SubscriptionStorage.GetSubscriptionFromServerStore(subscriptionName);
-                tag = databaseRecord.Topology.WhoseTaskIsIt(someServer.ServerStore.Engine.CurrentState, subscriptionState, null);
+                Assert.False(ct.IsCancellationRequested);
+                string tag = null;
+                var someServer = Servers.First(x => x.Disposed == false);
+                using (someServer.ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
+                using (context.OpenReadTransaction())
+                {
+                    var databaseRecord = someServer.ServerStore.Cluster.ReadDatabase(context, defaultDatabase);
+                    var db = await someServer.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(defaultDatabase).ConfigureAwait(false);
+                    var subscriptionState = db.SubscriptionStorage.GetSubscriptionFromServerStore(subscriptionName);
+                    tag = databaseRecord.Topology.WhoseTaskIsIt(someServer.ServerStore.Engine.CurrentState, subscriptionState, null);
+
+                }
+                if (tag == null)
+                {
+                    await Task.Delay(100);
+                    continue;
+                }
+                
+                var server = Servers.First(x => x.ServerStore.NodeTag == tag);
+
+                if (server.Disposed)
+                {
+                    await Task.Delay(100);
+                    continue;
+                }                
+                await DisposeServerAndWaitForFinishOfDisposalAsync(server);
+                return;
             }
-            Assert.NotNull(tag);
-            DisposeServerAndWaitForFinishOfDisposal(Servers.First(x => x.ServerStore.NodeTag == tag));
+            
         }
 
         private static async Task GenerateDocuments(IDocumentStore store)

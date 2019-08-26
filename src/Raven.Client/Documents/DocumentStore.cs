@@ -153,6 +153,8 @@ namespace Raven.Client.Documents
 
         public event EventHandler<RequestExecutor> RequestExecutorCreated;
 
+        public static int IdSource = 0;
+        public int Id = Interlocked.Increment(ref IdSource);
         public override RequestExecutor GetRequestExecutor(string database = null)
         {
             AssertInitialized();

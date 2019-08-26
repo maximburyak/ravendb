@@ -6,6 +6,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Sockets;
@@ -83,7 +84,7 @@ namespace Raven.Client.Documents.Subscriptions
         public async Task DisposeAsync(bool waitForSubscriptionTask)
         {
             try
-            {
+            {                
                 if (_disposed)
                     return;
 
@@ -170,7 +171,7 @@ namespace Raven.Client.Documents.Subscriptions
                     {
                         await requestExecutor.ExecuteAsync(_redirectNode, null, context, command, shouldRetry: false, sessionInfo: null, token: token)
                             .ConfigureAwait(false);
-                        tcpInfo = command.Result;
+                        tcpInfo = command.Result;                        
                     }
                     catch (ClientVersionMismatchException)
                     {
@@ -178,6 +179,8 @@ namespace Raven.Client.Documents.Subscriptions
                     }
                     catch (Exception)
                     {
+                        Console.WriteLine($"Subs req Exec failed and nullifying redirect node {_redirectNode.Url}");
+
                         // if we failed to talk to a node, we'll forget about it and let the topology to 
                         // redirect us to the current node
                         _redirectNode = null;
@@ -194,6 +197,19 @@ namespace Raven.Client.Documents.Subscriptions
                     catch (ClientVersionMismatchException)
                     {
                         tcpInfo = await LegacyTryGetTcpInfo(requestExecutor, context, token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        Debugger.Launch();
+                        Debugger.Break();
+                        await requestExecutor.ExecuteAsync(command, context, sessionInfo: null, token: token).ConfigureAwait(false);
+
+                        Console.WriteLine("Subs req Exec failed for not specific node");
+                        throw;
                     }
                 }
 
@@ -247,6 +263,7 @@ namespace Raven.Client.Documents.Subscriptions
             }
             catch (Exception)
             {
+                Console.WriteLine("Nullifying _redirectNode in LegacyTryGetTcpInfo(RequestExecutor requestExecutor, JsonOperationContext context, CancellationToken token)");
                 _redirectNode = null;
                 throw;
             }
@@ -264,6 +281,7 @@ namespace Raven.Client.Documents.Subscriptions
             }
             catch (Exception)
             {
+                Console.WriteLine("Nullifying _redirectNode in LegacyTryGetTcpInfo(RequestExecutor requestExecutor, JsonOperationContext context, ServerNode node, CancellationToken token)");
                 _redirectNode = null;
                 throw;
             }
@@ -600,7 +618,7 @@ namespace Raven.Client.Documents.Subscriptions
                                 $"Subscription '{_options.SubscriptionName}'. Pulling task threw the following exception", ex);
                         }
                         if (ShouldTryToReconnect(ex))
-                        {
+                        {                            
                             await TimeoutManager.WaitFor(_options.TimeToWaitBeforeConnectionRetry).ConfigureAwait(false);
                             var onSubscriptionConnectionRetry = OnSubscriptionConnectionRetry;
                             onSubscriptionConnectionRetry?.Invoke(ex);
@@ -647,6 +665,7 @@ namespace Raven.Client.Documents.Subscriptions
 
         private bool ShouldTryToReconnect(Exception ex)
         {
+            _lastConnectionException = ex;
             switch (ex)
             {
                 case SubscriptionDoesNotBelongToNodeException se:
@@ -659,8 +678,10 @@ namespace Raven.Client.Documents.Subscriptions
 
                     var nodeToRedirectTo = requestExecutor.TopologyNodes
                         .FirstOrDefault(x => x.ClusterTag == se.AppropriateNode);
-                    _redirectNode = nodeToRedirectTo ?? throw new AggregateException(ex,
-                                        new InvalidOperationException($"Could not redirect to {se.AppropriateNode}, because it was not found in local topology, even after retrying"));
+                    //_redirectNode = nodeToRedirectTo ?? throw new AggregateException(ex,
+                    //                    new InvalidOperationException($"Could not redirect to {se.AppropriateNode}, because it was not found in local topology, even after retrying"));
+                    _redirectNode = null;
+                    Console.WriteLine($"redirectNode now is {_redirectNode.Url}");
 
                     return true;
                 case SubscriptionChangeVectorUpdateConcurrencyException _:
@@ -681,6 +702,8 @@ namespace Raven.Client.Documents.Subscriptions
                     return true;
             }
         }
+
+        Exception _lastConnectionException;
 
 
         private void CloseTcpClient()

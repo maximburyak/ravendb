@@ -2289,13 +2289,15 @@ namespace Raven.Server
         internal NamedPipeServerStream LogStreamPipe { get; set; }
 
         public void Dispose()
-        {
+        {            
             if (Disposed)
                 return;
+
             lock (this)
             {
-                if (Disposed)
+                if (Disposed)                
                     return;
+                
 
                 Disposed = true;
                 var ea = new ExceptionAggregator("Failed to properly close RavenServer");

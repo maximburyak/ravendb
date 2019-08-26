@@ -73,7 +73,7 @@ namespace Raven.Client.Http
 
         private Timer _updateTopologyTimer;
 
-        protected NodeSelector _nodeSelector;
+        public NodeSelector _nodeSelector;
 
         private TimeSpan? _defaultTimeout;
 
@@ -95,6 +95,8 @@ namespace Raven.Client.Http
             }
         }
 
+
+        // todo: this has very strange behavior
         public long TopologyEtag { get; protected set; }
 
         public long ClientConfigurationEtag { get; internal set; }
@@ -149,6 +151,7 @@ namespace Raven.Client.Http
 
         protected RequestExecutor(string databaseName, X509Certificate2 certificate, DocumentConventions conventions, string[] initialUrls)
         {
+            ID = Interlocked.Increment(ref IdCounter);
             Cache = new HttpCache(conventions.MaxHttpCacheSize.GetValue(SizeUnit.Bytes));
 
             _disposeOnceRunner = new DisposeOnce<ExceptionRetry>(() =>
@@ -288,6 +291,7 @@ namespace Raven.Client.Http
 
         public virtual async Task<bool> UpdateTopologyAsync(ServerNode node, int timeout, bool forceUpdate = false, string debugTag = null)
         {
+            Console.WriteLine($"reqEx {ID} updating topology");
             if (_disableTopologyUpdates)
                 return false;
 
@@ -310,7 +314,7 @@ namespace Raven.Client.Http
                     var command = new GetDatabaseTopologyCommand(debugTag);
                     await ExecuteAsync(node, null, context, command, shouldRetry: false, sessionInfo: null, token: CancellationToken.None).ConfigureAwait(false);
                     var topology = command.Result;
-
+                    Console.WriteLine($"Received topology with etag: {topology.Etag}");
                     DatabaseTopologyLocalCache.TrySaving(_databaseName, TopologyHash, topology, Conventions, context);
 
                     if (_nodeSelector == null)
@@ -647,6 +651,12 @@ namespace Raven.Client.Http
             SessionInfo sessionInfo = null,
             CancellationToken token = default)
         {
+            if (command.InitialTopologyEtag == -1)
+            {
+                Console.WriteLine($"for command {command.ID} Initial Etag was: {command.InitialTopologyEtag} while toplogy etag was: {TopologyEtag}");
+                //command.InitialTopologyEtag = TopologyEtag;
+            }
+
             var request = CreateRequest(context, chosenNode, command, out string url);
             var noCaching = sessionInfo?.NoCaching ?? false;
 
@@ -793,6 +803,21 @@ namespace Raven.Client.Http
                     }
 
                     return;
+                }
+                catch (OperationCanceledException e)
+                {
+                    Console.WriteLine(ID + "req ex canceled");
+                    throw;
+                }
+                catch (TimeoutException ex)
+                {
+                    Console.WriteLine(ID + "req ex timeout");
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine(ID + $"out of order exception: {ex}");
+                    throw;
                 }
                 finally
                 {
@@ -942,7 +967,7 @@ namespace Raven.Client.Http
         private async Task ExecuteOnAllToFigureOutTheFastest<TResult>(ServerNode chosenNode, RavenCommand<TResult> command, Task<HttpResponseMessage> preferredTask,
             CancellationToken token = default)
         {
-            int numberOfFailedTasks = 0;
+            long numberOfFailedTasks = 0;
 
             var nodes = _nodeSelector.Topology.Nodes;
             var tasks = new Task[nodes.Count];
@@ -984,14 +1009,14 @@ namespace Raven.Client.Http
                 }
                 catch (Exception)
                 {
-                    numberOfFailedTasks++;
+                    Interlocked.Increment(ref numberOfFailedTasks);
                     // nothing we can do about it
                     tasks[i] = NeverEndingRequest;
                     disposable?.Dispose();
                 }
             }
 
-            while (numberOfFailedTasks < tasks.Length)
+            while (Interlocked.Read(ref numberOfFailedTasks )< tasks.Length)
             {
                 // here we rely on WhenAny NOT throwing if the completed
                 // task has failed
@@ -1150,6 +1175,9 @@ namespace Raven.Client.Http
             return serverStream;
         }
 
+        public int ID =0;
+        public static int IdCounter = 0;
+
         private async Task<bool> HandleServerDown<TResult>(string url, ServerNode chosenNode, int? nodeIndex, JsonOperationContext context, RavenCommand<TResult> command,
             HttpRequestMessage request, HttpResponseMessage response, Exception e, SessionInfo sessionInfo, bool shouldRetry, CancellationToken token = default)
         {
@@ -1161,21 +1189,44 @@ namespace Raven.Client.Http
             if (nodeIndex.HasValue == false)
             {
                 // we executed request over a node not in the topology. This means no failover...
+                
                 return false;
             }
 
             SpawnHealthChecks(chosenNode, nodeIndex.Value);
 
             if (_nodeSelector == null)
+            {
+                
                 return false;
+            }
 
             _nodeSelector.OnFailedRequest(nodeIndex.Value);
 
             var (currentIndex, currentNode) = _nodeSelector.GetPreferredNode();
+
+            long commandInitialEtag = command.InitialTopologyEtag;
+            long topologyEtag = TopologyEtag;
+
+            if (commandInitialEtag != topologyEtag)
+            {                
+                command.FailedNodes.Clear();
+                command.InitialTopologyEtag = topologyEtag;
+                Console.WriteLine($"For Command {command.ID} Clearing failed nodes InitialEtag: {commandInitialEtag} TopologyEtag {topologyEtag}");
+            }
+
             if (command.FailedNodes.ContainsKey(currentNode))
             {
+                // booboo here
+                Console.WriteLine($@"for command {command.ID} reqEx {ID} won't retry for node {chosenNode.Url} (index) {currentIndex}, 
+curent nodes state is: Failures: {string.Join(",",_nodeSelector._state.Failures)}
+topologyEtag: {topologyEtag} commandTopologyEtag: {commandInitialEtag}");
+
+                
                 return false; //we tried all the nodes...nothing left to do
             }
+
+            //Console.WriteLine($"will retry for {chosenNode.Url} (index) {currentIndex}");
 
             OnFailedRequest(url, e);
 

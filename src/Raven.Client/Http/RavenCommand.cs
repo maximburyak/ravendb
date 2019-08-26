@@ -34,7 +34,13 @@ namespace Raven.Client.Http
         string RaftUniqueRequestId { get; }
     }
 
-    public abstract class RavenCommand<TResult>
+
+    public abstract class RavenCommandBase
+    {
+        public static int IdCounter = 0;
+        public int ID = Interlocked.Increment(ref IdCounter);
+    }
+    public abstract class RavenCommand<TResult>: RavenCommandBase
     {
         public CancellationToken CancellationToken = CancellationToken.None;
         public Dictionary<ServerNode, Exception> FailedNodes;
@@ -51,8 +57,10 @@ namespace Raven.Client.Http
         public bool CanCacheAggressively { get; protected set; }
         public string SelectedNodeTag { get; protected set; }
 
+        public long InitialTopologyEtag = -1;                       
+
         protected RavenCommand()
-        {
+        {            
             ResponseType = RavenCommandResponseType.Object;
             CanCache = true;
             CanCacheAggressively = true;

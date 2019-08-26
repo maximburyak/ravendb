@@ -353,7 +353,7 @@ namespace Tests.Infrastructure
             serverToDispose.Dispose();
 
             mre.Wait();
-        }
+        }        
 
         protected static async Task<(string DataDir, string Url)> DisposeServerAndWaitForFinishOfDisposalAsync(RavenServer serverToDispose, CancellationToken token = default)
         {
@@ -361,10 +361,10 @@ namespace Tests.Infrastructure
             var dataDir = serverToDispose.Configuration.Core.DataDirectory.FullPath.Split('/').Last();
             var url = serverToDispose.WebUrl;
 
-            serverToDispose.AfterDisposal += () => mre.Set();
+            serverToDispose.AfterDisposal += mre.Set;
             serverToDispose.Dispose();
-
-            await mre.WaitAsync(token).ConfigureAwait(false);
+                        
+            await mre.WaitAsync(token).ConfigureAwait(false);            
             return (dataDir, url);
         }
 

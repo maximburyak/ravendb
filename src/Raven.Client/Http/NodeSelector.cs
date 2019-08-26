@@ -7,7 +7,7 @@ namespace Raven.Client.Http
 {
     public class NodeSelector : IDisposable
     {
-        private class NodeSelectorState
+        public class NodeSelectorState
         {
             public readonly Topology Topology;
             public readonly List<ServerNode> Nodes;
@@ -29,10 +29,12 @@ namespace Raven.Client.Http
 
         private Timer _updateFastestNodeTimer;
 
-        private NodeSelectorState _state;
-
+        public NodeSelectorState _state;
+        public int ID = 0;
+        public static int IdCounter = 0;
         public NodeSelector(Topology topology)
         {
+            ID = Interlocked.Increment(ref IdCounter);
             _state = new NodeSelectorState(topology);
         }
 
@@ -40,8 +42,12 @@ namespace Raven.Client.Http
         {
             var state = _state;
             if (nodeIndex < 0 || nodeIndex >= state.Failures.Length)
+            {
+                Console.WriteLine($"{ID} not incrementing {nodeIndex}  Failures: {string.Join(",", _state.Failures)}");
                 return; // probably already changed
+            }
 
+            Console.WriteLine($"{ID} incrementing {nodeIndex} from {state.Failures[nodeIndex]}  Failures: {string.Join(",", _state.Failures)}");
             Interlocked.Increment(ref state.Failures[nodeIndex]);
         }
 
@@ -55,6 +61,7 @@ namespace Raven.Client.Http
 
             var state = new NodeSelectorState(topology);
 
+            Console.WriteLine($"{ID} state switched due to topology update");
             Interlocked.Exchange(ref _state, state);
 
             return true;
@@ -93,6 +100,7 @@ namespace Raven.Client.Http
             {
                 if (stateFailures[i] == 0 && string.IsNullOrEmpty(serverNodes[i].Url) == false)
                 {
+                    //Console.WriteLine($"{ID} pref node is: {i}");
                     return (i, serverNodes[i]);
                 }
             }
@@ -105,8 +113,7 @@ namespace Raven.Client.Http
             // if there are all marked as failed, we'll chose the first
             // one so the user will get an error (or recover :-) );
             if (state.Nodes.Count == 0)
-                throw new AllTopologyNodesDownException("There are no nodes in the topology at all");
-
+                throw new AllTopologyNodesDownException("There are no nodes in the topology at all");            
             return (0, state.Nodes[0]);
         }
 
@@ -146,6 +153,7 @@ namespace Raven.Client.Http
 
         public void RestoreNodeIndex(int nodeIndex)
         {
+            Console.WriteLine($"{ID}: restoring {nodeIndex}");
             var state = _state;
             if (state.Failures.Length <= nodeIndex)
                 return; // the state was changed and we no longer have it?
@@ -169,7 +177,7 @@ namespace Raven.Client.Http
             var state = _state;
             if (Interlocked.CompareExchange(ref state.SpeedTestMode, 1, 0) != 0)
                 return;
-
+            
             Array.Clear(state.FastestRecords,0, state.Failures.Length);
 
             Interlocked.Increment(ref state.SpeedTestMode);
