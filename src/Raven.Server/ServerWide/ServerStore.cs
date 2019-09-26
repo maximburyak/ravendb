@@ -73,6 +73,8 @@ using Sparrow.Utils;
 using Voron;
 using Constants = Raven.Client.Constants;
 using Sparrow.Platform;
+using Voron.Impl.Backup;
+using System.IO.Compression;
 
 namespace Raven.Server.ServerWide
 {
@@ -2847,6 +2849,30 @@ namespace Raven.Server.ServerWide
             }
 
             yield return usage;
+        }
+
+        public void FullBackupTo(string backupPath)
+        {
+            using (var file = SafeFileStream.Create(backupPath, FileMode.Create))
+            using (var package = new ZipArchive(file, ZipArchiveMode.Create, leaveOpen: true))
+           {
+
+                var sw = Stopwatch.StartNew();
+                BackupMethods.Full.ToFile(new[] { _env }, package,
+                    infoNotify: info=>{
+                    Logger.Info($"ServerStore backup: {info.Message}")
+                         //_backupResult.SnapshotBackup.ReadCount += info.FilesCount;
+
+                    if (sw.ElapsedMilliseconds > 0 && info.FilesCount > 0)
+                    {
+                        Logger.Info($"Backed up {_backupResult.SnapshotBackup.ReadCount} " +
+                                $"file{(_backupResult.SnapshotBackup.ReadCount > 1 ? "s" : string.Empty)}");
+                        sw.Restart();
+                    }
+                    }, cancellationToken: ServerShutdown);
+
+                file.Flush(true); // make sure that we fully flushed to disk
+            }
         }
     }
 }
