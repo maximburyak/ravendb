@@ -21,6 +21,9 @@ using Sparrow.Json.Parsing;
 using Raven.Server.Rachis;
 using Raven.Client.ServerWide.Operations.Configuration;
 using Raven.Server.Documents.PeriodicBackup;
+using Sparrow.Utils;
+using System.IO.Compression;
+using Voron.Impl.Backup;
 using Raven.Server.Config.Settings;
 
 namespace Raven.Server.Web.System
@@ -85,6 +88,18 @@ namespace Raven.Server.Web.System
                     writer.Flush();
                 }
             }
+        }
+
+
+        // Perform store backup
+        [RavenAction("/admin/configuration/store/backup", "PUT", AuthorizationStatus.ClusterAdmin)]
+        public void PerformStoreBackup()
+        {
+            var backupPath = GetStringQueryString("backupPath", required: true);
+
+
+            ServerStore.PerformServerStoreBackup(backupPath);            
+        
         }
 
         [RavenAction("/admin/configuration/server-wide/backup", "DELETE", AuthorizationStatus.ClusterAdmin)]
