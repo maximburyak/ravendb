@@ -2362,6 +2362,60 @@ namespace Raven.Server.ServerWide
             }
         }
 
+        public long GetCompareExchangeValuesCount(TransactionOperationContext context)
+        {
+            var compareExchangeIndex = CompareExchangeSchema.Indexes[CompareExchangeIndex];
+            var table = context.Transaction.InnerTransaction.OpenTable(CompareExchangeSchema, CompareExchangeTombstones);
+            return table.GetTree(compareExchangeIndex).State.NumberOfEntries;
+        }
+
+        public long GetCompareExchangeTombstonesCount(TransactionOperationContext context)
+        {
+            var compareExchangeTombstoneIndex = CompareExchangeTombstoneSchema.Indexes[CompareExchangeTombstoneIndex];
+            var table = context.Transaction.InnerTransaction.OpenTable(CompareExchangeSchema, CompareExchangeTombstones);
+            return table.GetTree(compareExchangeTombstoneIndex).State.NumberOfEntries;
+        }
+
+        public long GetIdentitiesCount(TransactionOperationContext context)
+        {
+            var identitiesIndex = IdentitiesSchema.Indexes[IdentitiesIndex];
+            var table = context.Transaction.InnerTransaction.OpenTable(IdentitiesSchema, IdentitiesIndex);
+            return table.GetTree(identitiesIndex).State.NumberOfEntries;
+        }
+
+        public long GetDatabasesCount(TransactionOperationContext context)
+        {
+            var items = context.Transaction.InnerTransaction.OpenTable(ItemsSchema, Items);
+            long count = 0;
+            const string dbKey = "db/";
+            using (Slice.From(context.Allocator, dbKey, out Slice loweredPrefix))
+            {
+                foreach (var result in items.SeekByPrimaryKeyPrefix(loweredPrefix, Slices.Empty, 0))
+                {
+                    count++;
+                }
+            }
+            return count;
+        }
+
+        public long GetClusterStateMachineValuesCount(TransactionOperationContext context)
+        {
+            var items = context.Transaction.InnerTransaction.OpenTable(ItemsSchema, Items);
+
+            long count = 0;
+            
+            using (Slice.From(context.Allocator, Helpers.ValuesPrefix, out Slice loweredPrefix))
+            {
+                foreach (var result in items.SeekByPrimaryKeyPrefix(loweredPrefix, Slices.Empty, 0))
+                {
+                    if (result.Key.Content.StartsWith(Helpers.ValuesPrefix.Length, Raven.Client.Documents.Subscriptions.SubscriptionState.SubscriptionSuffix))
+                        count++;
+                }
+            }
+            return count;
+
+        }
+
         private void ClearCompareExchangeTombstones(TransactionOperationContext context, string type, BlittableJsonReaderObject cmd, long index, out bool result)
         {
             string databaseName = null;

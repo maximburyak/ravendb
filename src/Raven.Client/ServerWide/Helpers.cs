@@ -7,9 +7,10 @@ namespace Raven.Client.ServerWide
     {
         private const string ValidDbNameChars = @"([A-Za-z0-9_\-\.]+)";
 
+        public const string ValuesPrefix = "values/";
         public static string ClusterStateMachineValuesPrefix(string databaseName)
         {
-            return $"values/{databaseName}/";
+            return $"{ValuesPrefix}{databaseName}/";
         }
 
         public static void AssertValidDatabaseName(string databaseName)

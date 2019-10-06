@@ -33,7 +33,7 @@ namespace Voron.Impl.Backup
 
         public void ToFile(StorageEnvironment env, VoronPathSetting backupPath,
             CompressionLevel compression = CompressionLevel.Optimal,
-            Action<(string Message, int FilesCount)> infoNotify = null)
+            Action<(string Message, int FilesCount)> infoNotify = null, CancellationToken cancellationToken = default)
         {
             infoNotify = infoNotify ?? (_ => { });
 
@@ -46,7 +46,7 @@ namespace Voron.Impl.Backup
                     infoNotify(("Voron backup started", 0));
                     var dataPager = env.Options.DataPager;
                     var copier = new DataCopier(Constants.Storage.PageSize * 16);
-                    Backup(env, compression, dataPager, package, string.Empty, copier, infoNotify);
+                    Backup(env, compression, dataPager, package, string.Empty, copier, infoNotify, cancellationToken);
 
                     file.Flush(true); // make sure that we fully flushed to disk
                 }
@@ -54,6 +54,7 @@ namespace Voron.Impl.Backup
 
             infoNotify(("Voron backup db finished", 0));
         }
+
         /// <summary>
         /// Do a full backup of a set of environments. Note that the order of the environments matter!
         /// </summary>

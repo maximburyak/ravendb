@@ -314,6 +314,20 @@ namespace Sparrow.Server
             return -1;
         }
 
+        public bool StartsWith(int start, string substring)
+        {
+            if (start + substring.Length > this.Length)
+                return false;
+
+            int i = start, j = 0;
+            for (; i < Length && j<substring.Length; i++, j++)
+            {
+                if (this[i] != substring[j])
+                    return false;
+            }
+            return true;            
+        }
+
         public string Substring(int length)
         {
             if (!HasValue)

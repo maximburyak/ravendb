@@ -13,6 +13,7 @@ namespace Raven.Client.Documents.Subscriptions
 {
     public class SubscriptionState : IDatabaseTask, IDatabaseTaskStatus
     {
+        public const string SubscriptionSuffix = "subscriptions/";
         public string Query { get; set; }
         public string ChangeVectorForNextBatchStartingPoint { get; set; }
         public long SubscriptionId { get; set; }
@@ -68,10 +69,10 @@ namespace Raven.Client.Documents.Subscriptions
         {
             return $"{SubscriptionPrefix(databaseName)}{subscriptionName}";
         }
-
+        
         public static string SubscriptionPrefix(string databaseName)
         {
-            return $"{Helpers.ClusterStateMachineValuesPrefix(databaseName)}subscriptions/";
+            return $"{Helpers.ClusterStateMachineValuesPrefix(databaseName)}{SubscriptionSuffix}";
         }
     }
 

@@ -103,7 +103,7 @@ namespace Raven.Server.Documents.PeriodicBackup
         {
             using (var client = new RavenAwsGlacierClient(settings, progress, _logger, TaskCancelToken.Token))
             {
-                var key = CombinePathAndKey(settings.RemoteFolderName ?? _backupUploaderSettings.DatabaseName);
+                var key = CombinePathAndKey(settings.RemoteFolderName ?? _backupUploaderSettings.DatabaseName); // todo: decide whether we want to do that across the board, or only for glacier
                 var archiveId = client.UploadArchive(stream, key);
                 if (_logger.IsInfoEnabled)
                     _logger.Info($"{ReportSuccess(GlacierName)}, archive ID: {archiveId}");
@@ -179,6 +179,8 @@ namespace Raven.Server.Documents.PeriodicBackup
             Debug.Assert(uploadStatus != null);
 
             var localUploadStatus = uploadStatus;
+            var resourceName = _backupUploaderSettings.DatabaseName != null ? $"database '{_backupUploaderSettings.DatabaseName}'" : "Server Store";
+
             var thread = PoolOfThreads.GlobalRavenThreadPool.LongRunning(_ =>
             {
                 try
@@ -244,7 +246,7 @@ namespace Raven.Server.Documents.PeriodicBackup
                     localUploadStatus.Exception = (exception ?? e).ToString();
                     _exceptions.Add(exception ?? new InvalidOperationException(error, e));
                 }
-            }, null, $"Upload backup file of database '{_backupUploaderSettings.DatabaseName}' to {targetName} (task: '{_backupUploaderSettings.TaskName}')");
+            }, null, $"Upload backup file of {resourceName}' to {targetName} (task: '{_backupUploaderSettings.TaskName}')");
 
             _threads.Add(thread);
         }
@@ -261,7 +263,8 @@ namespace Raven.Server.Documents.PeriodicBackup
         private string GetArchiveDescription()
         {
             var fullBackupText = _backupUploaderSettings.BackupType == BackupType.Backup ? "Full backup" : "A snapshot";
-            return $"{(_isFullBackup ? fullBackupText : "Incremental backup")} for db {_backupUploaderSettings.DatabaseName} at {SystemTime.UtcNow}";
+            var resourceName = _backupUploaderSettings.DatabaseName != null ? $"db {_backupUploaderSettings.DatabaseName}" : "Server Store";
+            return $"{(_isFullBackup ? fullBackupText : "Incremental backup")} for {resourceName } at {SystemTime.UtcNow}";
         }
 
         private static string MsToHumanReadableString(long milliseconds)

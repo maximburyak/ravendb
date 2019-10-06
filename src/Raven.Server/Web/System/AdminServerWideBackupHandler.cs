@@ -88,19 +88,7 @@ namespace Raven.Server.Web.System
                     writer.Flush();
                 }
             }
-        }
-
-
-        // Perform store backup
-        [RavenAction("/admin/configuration/store/backup", "PUT", AuthorizationStatus.ClusterAdmin)]
-        public void PerformStoreBackup()
-        {
-            var backupPath = GetStringQueryString("backupPath", required: true);
-
-
-            ServerStore.PerformServerStoreBackup(backupPath);            
-        
-        }
+        }       
 
         [RavenAction("/admin/configuration/server-wide/backup", "DELETE", AuthorizationStatus.ClusterAdmin)]
         public async Task DeleteServerWideBackupConfigurationCommand()

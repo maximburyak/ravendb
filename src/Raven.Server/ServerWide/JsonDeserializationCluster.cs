@@ -183,7 +183,9 @@ namespace Raven.Server.ServerWide
             [nameof(RemoveEtlProcessStateCommand)] = GenerateJsonDeserializationRoutine<RemoveEtlProcessStateCommand>(),
             [nameof(PutSortersCommand)] = GenerateJsonDeserializationRoutine<PutSortersCommand>(),
             [nameof(DeleteSorterCommand)] = GenerateJsonDeserializationRoutine<DeleteSorterCommand>(),
-            [nameof(UpdateUnusedDatabaseIdsCommand)] = GenerateJsonDeserializationRoutine<UpdateUnusedDatabaseIdsCommand>()
+            [nameof(UpdateUnusedDatabaseIdsCommand)] = GenerateJsonDeserializationRoutine<UpdateUnusedDatabaseIdsCommand>(),
+            [nameof(UpdateServerStoreBackupStatusCommand)] = GenerateJsonDeserializationRoutine<UpdateServerStoreBackupStatusCommand>(),
+            [nameof(UpdateServerStoreBackupCommand)] = GenerateJsonDeserializationRoutine<UpdateServerStoreBackupCommand>()
         };
     }
 }

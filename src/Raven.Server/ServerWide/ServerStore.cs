@@ -77,6 +77,10 @@ using Voron;
 using Constants = Raven.Client.Constants;
 using Voron.Impl.Backup;
 using System.IO.Compression;
+using Raven.Server.Documents.PeriodicBackup;
+using Raven.Client.Documents.Smuggler;
+using Raven.Server.Documents.PeriodicBackup.Restore;
+using Voron.Util.Settings;
 
 namespace Raven.Server.ServerWide
 {
@@ -2920,28 +2924,32 @@ namespace Raven.Server.ServerWide
             yield return usage;
         }
 
-        public void FullBackupTo(string backupPath)
+        public ServerStoreSummary GetServerStoreSummary()
         {
-            using (var file = SafeFileStream.Create(backupPath, FileMode.Create))
-            using (var package = new ZipArchive(file, ZipArchiveMode.Create, leaveOpen: true))
-           {
-
-                var sw = Stopwatch.StartNew();
-                BackupMethods.Full.ToFile(new[] { _env }, package,
-                    infoNotify: info=>{
-                    Logger.Info($"ServerStore backup: {info.Message}")
-                         //_backupResult.SnapshotBackup.ReadCount += info.FilesCount;
-
-                    if (sw.ElapsedMilliseconds > 0 && info.FilesCount > 0)
-                    {
-                        Logger.Info($"Backed up {_backupResult.SnapshotBackup.ReadCount} " +
-                                $"file{(_backupResult.SnapshotBackup.ReadCount > 1 ? "s" : string.Empty)}");
-                        sw.Restart();
-                    }
-                    }, cancellationToken: ServerShutdown);
-
-                file.Flush(true); // make sure that we fully flushed to disk
+            using (ContextPool.AllocateOperationContext(out TransactionOperationContext context))
+            using (context.OpenReadTransaction())
+            {
+                return new ServerStoreSummary
+                {
+                    LastRaftCommitIndex = this.LastRaftCommitIndex,
+                    DatabaseNames = this.Cluster.GetDatabaseNames(context).ToList(),
+                    CompareExchangeValuesCount = this.Cluster.GetCompareExchangeValuesCount(context),
+                    CompareExchangeTombstonesCount = this.Cluster.GetCompareExchangeTombstonesCount(context),
+                    IdentitiesCount = this.Cluster.GetIdentitiesCount(context),
+                    ClusterStateMachineValuesCount = this.Cluster.GetClusterStateMachineValuesCount(context)
+                };
             }
+        }
+
+        public void FullBackupTo(string backupPath,
+           Action<(string Message, int FilesCount)> infoNotify = null,
+           CancellationToken cancellationToken = default)
+        {
+            SmugglerResult smugglerResult;
+
+            // todo: probably we want to write here some data about server version?
+            BackupMethods.Full.ToFile(this._env, new VoronPathSetting(backupPath),CompressionLevel.Optimal,
+                infoNotify: infoNotify, cancellationToken);
         }
     }
 }

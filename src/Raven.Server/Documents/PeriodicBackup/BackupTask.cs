@@ -36,7 +36,7 @@ namespace Raven.Server.Documents.PeriodicBackup
     {
         public const string DateTimeFormat = "yyyy-MM-dd-HH-mm-ss";
         private const string LegacyDateTimeFormat = "yyyy-MM-dd-HH-mm";
-        private const string InProgressExtension = ".in-progress";
+        public const string InProgressExtension = ".in-progress";
 
         private readonly ServerStore _serverStore;
         private readonly DocumentDatabase _database;
@@ -472,7 +472,7 @@ namespace Raven.Server.Documents.PeriodicBackup
             return InProgressExtension.Equals(extension, StringComparison.OrdinalIgnoreCase);
         }
 
-        private string GetFileName(
+        public static string GetFileName(
             bool isFullBackup,
             string backupFolder,
             string now,
