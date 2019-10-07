@@ -536,7 +536,8 @@ namespace Raven.Server.ServerWide
             {
                 var command = new Commands.PeriodicBackup.UpdateServerStoreBackupStatusCommand(RaftIdGenerator.NewId())
                 {
-                    PeriodicBackupStatus = status
+                    PeriodicBackupStatus = status,
+                    Name = "ServerStoreBackup"
                 };
 
                 var result = AsyncHelpers.RunSync(() => _serverStore.SendToLeaderAsync(command));

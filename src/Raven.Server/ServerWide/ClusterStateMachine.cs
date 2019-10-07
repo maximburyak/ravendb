@@ -450,6 +450,9 @@ namespace Raven.Server.ServerWide
                     case nameof(PutServerWideStudioConfigurationCommand):
                         PutValue<ServerWideStudioConfiguration>(context, type, cmd, index);
                         break;
+                    case nameof(UpdateServerStoreBackupStatusCommand):
+                        UpdateValue<PeriodicBackupStatus>(context, type, cmd, index);
+                        break;
                     case nameof(AddDatabaseCommand):
                         var addedNodes = AddDatabase(context, cmd, index, leader);
                         if (addedNodes != null)
@@ -2365,7 +2368,7 @@ namespace Raven.Server.ServerWide
         public long GetCompareExchangeValuesCount(TransactionOperationContext context)
         {
             var compareExchangeIndex = CompareExchangeSchema.Indexes[CompareExchangeIndex];
-            var table = context.Transaction.InnerTransaction.OpenTable(CompareExchangeSchema, CompareExchangeTombstones);
+            var table = context.Transaction.InnerTransaction.OpenTable(CompareExchangeSchema, CompareExchange);
             return table.GetTree(compareExchangeIndex).State.NumberOfEntries;
         }
 
@@ -2379,7 +2382,7 @@ namespace Raven.Server.ServerWide
         public long GetIdentitiesCount(TransactionOperationContext context)
         {
             var identitiesIndex = IdentitiesSchema.Indexes[IdentitiesIndex];
-            var table = context.Transaction.InnerTransaction.OpenTable(IdentitiesSchema, IdentitiesIndex);
+            var table = context.Transaction.InnerTransaction.OpenTable(IdentitiesSchema, Identities);
             return table.GetTree(identitiesIndex).State.NumberOfEntries;
         }
 

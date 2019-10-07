@@ -73,6 +73,8 @@ namespace Raven.Server.ServerWide
             [nameof(UpdateSubscriptionClientConnectionTime)] = Base40CommandsVersion,
             [nameof(UpdatePeriodicBackupCommand)] = Base40CommandsVersion,
             [nameof(UpdatePeriodicBackupStatusCommand)] = Base40CommandsVersion,
+            [nameof(UpdateServerStoreBackupStatusCommand)] = Base42CommandsVersion,
+            [nameof(UpdateServerStoreBackupCommand)] = Base42CommandsVersion,
             [nameof(UpdateSnmpDatabaseIndexesMappingCommand)] = Base40CommandsVersion,
             [nameof(UpdateSnmpDatabasesMappingCommand)] = Base40CommandsVersion,
             [nameof(DeleteIndexCommand)] = Base40CommandsVersion,
