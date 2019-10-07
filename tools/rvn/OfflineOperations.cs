@@ -1,8 +1,10 @@
 ﻿using System;
 using System.IO;
+using Raven.Client.Documents.Operations.Backups;
 using Raven.Server.Config.Categories;
 using Raven.Server.ServerWide;
 using Raven.Server.Utils;
+using Sparrow.Json.Parsing;
 using Sparrow.Server;
 using Voron;
 using Voron.Impl.Compaction;
@@ -79,6 +81,20 @@ namespace rvn
 
             IOExtensions.DeleteDirectory(srcDir);
             Directory.Move(dstDir, srcDir);
+
+            return "Decrypt: Completed Successfully";
+        }
+
+        public static string RestorServerStore(RestoreBackupConfigurationBase srcDir)
+        {
+            DynamicJsonValue djv = srcDir.ToJson();
+
+            switch (srcDir.ToJson())
+            {
+
+            }
+
+
 
             return "Decrypt: Completed Successfully";
         }

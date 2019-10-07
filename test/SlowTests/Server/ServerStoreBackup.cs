@@ -8,18 +8,23 @@ using Raven.Client.Documents.Operations.Backups;
 using Raven.Server.ServerWide;
 using Sparrow.Collections;
 using Sparrow.Logging;
+using Tests.Infrastructure;
 using Xunit;
 
 namespace SlowTests.Server
 {
-    public class ServerStoreBackup:RavenTestBase
+    public class ServerStoreBackup: ClusterTestBase
     {
         [Fact]
-        public void Backup()
+        public async Task Backup()
         {
             using (var store = GetDocumentStore())
             {
-                var server = Server;
+                var server = GetNewServer(new ServerCreationOptions
+                {
+                    RunInMemory = false
+                });
+
                 var tasks = new ConcurrentSet<Task>();
                 var logger = LoggingSource.Instance.GetLogger<ServerStoreBackup>("BackupTaskName");
                 var backupPath = NewDataPath(suffix: "BackupFolder");
@@ -48,6 +53,11 @@ namespace SlowTests.Server
                     (server.ServerStore.Configuration.Storage.TempPath ?? server.ServerStore.Configuration.Core.DataDirectory).Combine("PeriodicBackupTemp"),
                     logger);
                 backupTask.RunPeriodicBackup(x => Console.WriteLine(x.ToString()));
+
+                await DisposeServerAndWaitForFinishOfDisposalAsync(server);
+
+                
+                
             }
         }
     }

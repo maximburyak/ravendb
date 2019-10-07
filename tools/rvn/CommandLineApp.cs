@@ -327,6 +327,22 @@ namespace rvn
                     });
                 });
 
+                cmd.Command("restore-server-store", subcmd =>
+                {
+                    subcmd.ExtendedHelpText = Environment.NewLine + "Restores server store backup from a backup location." +
+                    Environment.NewLine + "Must be performed as an offline operation, existing System directory will be emptied from its contents";
+                    subcmd.HelpOption(HelpOptionString);
+                    subcmd.Description = "Restores server store backup";
+                    subcmd.Argument(systemDirArgText, systemDirArgDescText, systemDir =>
+                    {
+                        subcmd.OnExecute(() =>
+                        {
+                            return PerformOfflineOperation(
+                                () => OfflineOperations.Decrypt(systemDir.Value), systemDir, subcmd);
+                        });
+                    });
+                });
+
                 cmd.OnExecute(() =>
                 {
                     cmd.ShowHelp();
