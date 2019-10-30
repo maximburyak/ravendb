@@ -11,13 +11,14 @@ using Raven.Client.Exceptions.Documents.Subscriptions;
 using Raven.Server.Config;
 using Raven.Server.ServerWide.Context;
 using Raven.Tests.Core.Utils.Entities;
+using Sparrow.Server;
 using Tests.Infrastructure;
 using Xunit;
 using Xunit.Abstractions;
 
 namespace RachisTests
 {
-    public class SubscriptionFailoverWIthWaitingChains : ClusterTestBase
+    public class SubscriptionFailoverWithWaitingChains : ClusterTestBase
     {
 
         public class CountdownsArray : IDisposable
@@ -46,29 +47,118 @@ namespace RachisTests
             }
         }
 
-        public SubscriptionFailoverWIthWaitingChains(ITestOutputHelper output) : base(output)
+        public SubscriptionFailoverWithWaitingChains(ITestOutputHelper output) : base(output)
         {
         }
 
+
         [Fact]
-        public async Task DoStuff()
+        public async Task SimplifiedSubscriptionsShouldFailoverAndReturnToOriginalNodes()
         {
             const int SubscriptionsCount = 20;
             const int DocsBatchSize = 10;
             const int SubscriptionsChainSize = 2;
-            const int ClusterSize = 3;
+            const int ClusterSize = 5;
             const int DBGroupSIze = 3;
 
             var cluster = await CreateRaftCluster(ClusterSize, shouldRunInMemory: false);
+            Console.WriteLine(cluster.Leader.WebUrl);
+            //Console.WriteLine("Press 'any' key");
+            //Console.ReadLine();            
+            using (var store = GetDocumentStore(new Options
+            {
+                Server = cluster.Leader,
+                ReplicationFactor = DBGroupSIze,                
+                ModifyDocumentStore = s => s.Conventions.ReadBalanceBehavior = Raven.Client.Http.ReadBalanceBehavior.RoundRobin
+            }))
+            {
+                Console.WriteLine("Craeted database");
 
+                using (var session = store.OpenSession())
+                {
+                    session.Store(new User());
+                    session.SaveChanges();
+                }
+
+                var myMentor = store.GetRequestExecutor().Topology.Nodes.First().ClusterTag;
+                var subs = store.Subscriptions.Create<User>(new Raven.Client.Documents.Subscriptions.SubscriptionCreationOptions<User>
+                {
+                   // MentorNode = myMentor
+                });
+                var worker = store.Subscriptions.GetSubscriptionWorker(subs);
+
+                var amre = new AsyncManualResetEvent();
+                worker.AfterAcknowledgment += x =>
+                 {
+                     Console.WriteLine("Acked some docs");
+                     amre.Set();
+                     return Task.CompletedTask;
+                 };
+                worker.OnSubscriptionConnectionRetry += ex =>
+                {
+                    Console.WriteLine(ex);
+                };
+                var subsWorkerTask = worker.Run(x => { Console.WriteLine("got some docs"); });
+
+                Console.WriteLine("started subscription");
+                using (var session = store.OpenSession())
+                {
+                    session.Store(new User());
+                    session.SaveChanges();
+                }
+                Console.WriteLine("stored doc");
+                await amre.WaitAsync();
+                var databaseName = store.Database;                
+
+                for (var i = 0; i < cluster.Nodes.Count; i++)
+                {
+                    //if (cluster.Nodes[i].ServerStore.NodeTag != worker.CurrentNodeTag)
+                    //    continue;
+                    await ToggleClusterNodeOnAndOffAndWaitForRehab(databaseName, cluster, i);
+                    //Console.WriteLine("Press 'any' key");
+                    //Console.ReadLine();
+                }
+
+                Console.WriteLine("started waiting");
+                while (true)
+                {
+                    await subsWorkerTask.WaitAsync(100);
+                    using (var session = store.OpenSession())
+                    {
+                        session.Store(new User());
+                        session.SaveChanges();
+                    }
+                }
+            }
+        }
+
+
+        [Fact]        
+        public async Task SubscriptionsShouldFailoverAndReturnToOriginalNodes()
+        {
+            const int SubscriptionsCount = 20;
+            const int DocsBatchSize = 10;
+            const int SubscriptionsChainSize = 2;
+            const int ClusterSize = 5;
+            const int DBGroupSize = 3;
+
+            var cluster = await CreateRaftCluster(ClusterSize, shouldRunInMemory: false);
+            Console.WriteLine(cluster.Leader.WebUrl);
+            //Console.WriteLine("Press 'any' key");
+            //Console.ReadLine();
             using (var cdeArray = new CountdownsArray(SubscriptionsChainSize, SubscriptionsCount))
             using (var store = GetDocumentStore(new Options
             {
                 Server = cluster.Leader,
-                ReplicationFactor = DBGroupSIze
-
+                ReplicationFactor = DBGroupSize,
+                ModifyDocumentStore = s=>s.Conventions.ReadBalanceBehavior = Raven.Client.Http.ReadBalanceBehavior.RoundRobin
             }))
             {
+                using (var session = store.OpenSession())
+                {
+                    session.Store(new User());
+                    session.SaveChanges();
+                }
                 var databaseName = store.Database;
 
                 var workerTasks = new List<Task>();
@@ -82,8 +172,26 @@ namespace RachisTests
                     await ContinuouslyGenerateDocs(DocsBatchSize, store);
                 });
 
-                await ToggleClusterNodeOnAndOffAndWaitForRehab(databaseName, cluster, 0);
-                await ToggleClusterNodeOnAndOffAndWaitForRehab(databaseName, cluster, 1);
+
+                //for (var i=0; i<cluster.Nodes.Count-1; i++)
+                foreach (var node in store.GetRequestExecutor().TopologyNodes.Take(DBGroupSize-1))
+                {
+
+                    var i = 0;
+
+                    for (; i<cluster.Nodes.Count; i++)
+                    {
+                        if (cluster.Nodes[i].ServerStore.NodeTag == node.ClusterTag)
+                            break;
+                    }
+
+                    await ToggleClusterNodeOnAndOffAndWaitForRehab(databaseName, cluster, i);
+                    //Console.WriteLine("Press 'any' key");
+                    //Console.ReadLine();
+                }
+
+                //Console.WriteLine("Press 'any' key");
+                //Console.ReadLine();
 
                 Assert.All(cdeArray.GetArray(), cde => Assert.Equal(cde.CurrentCount, SubscriptionsCount));
 
@@ -93,10 +201,10 @@ namespace RachisTests
                 }
 
                 foreach (var curNode in cluster.Nodes)
-                {
+                {                    
                     await AssertNoSubscriptionLeftAlive(databaseName, SubscriptionsCount, curNode);
                 }
-
+                
                 await Task.WhenAll(workerTasks);
             }
         }
@@ -233,9 +341,9 @@ namespace RachisTests
             }, null, 10000, true);
 
             for (int i = 0; i < 10; i++)
-            {
+            {                
                 await DropSubscriptions(databaseName, SubscriptionsCount, cluster);
-
+                
                 if (await mainTcs.Task.WaitAsync(1000))
                     break;
             }
@@ -255,7 +363,17 @@ namespace RachisTests
                     using (curNode.ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
                     using (context.OpenReadTransaction())
                     {
-                        rehabCount = curNode.ServerStore.Cluster.ReadDatabaseTopology(context, dbName).Rehabs.Count;
+                        try
+                        {
+                            rehabCount = curNode.ServerStore.Cluster.ReadDatabaseTopology(context, dbName).Rehabs.Count;
+                        }
+                        catch (Exception)
+                        {
+
+                            await Task.Delay(1000);
+                            rehabCount = 1;
+                            continue;
+                        }
                         await Task.Delay(1000);
                     }
                 }
@@ -308,7 +426,8 @@ namespace RachisTests
                     RunInMemory = false,
                     CustomSettings = new Dictionary<string, string>
                     {
-                        [RavenConfiguration.GetKey(x => x.Core.ServerUrls)] = node.WebUrl
+                        [RavenConfiguration.GetKey(x => x.Core.ServerUrls)] = node.WebUrl,
+                    //    [RavenConfiguration.GetKey(x => x.Cluster.ElectionTimeout)] = node.Configuration.Cluster.ElectionTimeout.AsTimeSpan.TotalMilliseconds.ToString()
                     },
                     PartialPath = dataDir
                 });
@@ -316,7 +435,7 @@ namespace RachisTests
             }
             else
             {
-                await DisposeServerAndWaitForFinishOfDisposalAsync(node);
+                var nodeInfo = await DisposeServerAndWaitForFinishOfDisposalAsync(node);
             }
 
             return node;
