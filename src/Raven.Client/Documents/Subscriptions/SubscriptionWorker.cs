@@ -7,6 +7,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Sockets;
@@ -346,13 +347,14 @@ namespace Raven.Client.Documents.Subscriptions
                     {
                         foreach(var item in rawReasonsArray)
                         {
-                            if (item is BlittableJsonReaderObject itemAsBlittable)
+                            if (item is BlittableJsonReaderObject itemAsBlittable && itemAsBlittable.Count == 1)
                             {
-                                if (itemAsBlittable.Count == 1)
-                                {
-                                    var tagName = itemAsBlittable.GetPropertyNames()[0];
-                                    reasonsDictionary[tagName] = itemAsBlittable[tagName].ToString();
-                                }
+                                var tagName = itemAsBlittable.GetPropertyNames()[0];
+                                reasonsDictionary[tagName] = itemAsBlittable[tagName].ToString();
+                            }
+                            else
+                            {
+                                Debug.Assert(false, "Subscription redirect message is in unexpected format");
                             }
                         }
                     }
