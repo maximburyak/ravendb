@@ -10,11 +10,16 @@ using Sparrow.Collections;
 using Sparrow.Logging;
 using Tests.Infrastructure;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace SlowTests.Server
 {
     public class ServerStoreBackup: ClusterTestBase
     {
+        public ServerStoreBackup(ITestOutputHelper output) : base(output)
+        {
+
+        }
         [Fact]
         public async Task Backup()
         {

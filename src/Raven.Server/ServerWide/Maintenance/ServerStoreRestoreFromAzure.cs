@@ -14,7 +14,7 @@ namespace Raven.Server.ServerWide.Maintenance
     {
         private readonly RavenAzureClient _client;
         private readonly string _remoteFolderName;
-        public ServerStoreRestoreFromAzure(ServerStore serverStore, RestoreFromAzureConfiguration restoreFromConfiguration, string nodeTag, OperationCancelToken operationCancelToken) : base(serverStore, restoreFromConfiguration, nodeTag, operationCancelToken)
+        public ServerStoreRestoreFromAzure(ServerStoreRestoreFromAzureConfiguration restoreFromConfiguration) : base(restoreFromConfiguration)
         {
             _client = new RavenAzureClient(restoreFromConfiguration.Settings);
             _remoteFolderName = restoreFromConfiguration.Settings.RemoteFolderName;

@@ -15,7 +15,7 @@ namespace Raven.Server.ServerWide.Maintenance
         private readonly RavenGoogleCloudClient _client;
         private readonly string _remoteFolderName;
 
-        public ServerStoreRestoreFromGoogleCloud(ServerStore serverStore, RestoreFromGoogleCloudConfiguration restoreFromConfiguration, string nodeTag, OperationCancelToken operationCancelToken) : base(serverStore, restoreFromConfiguration, nodeTag, operationCancelToken)
+        public ServerStoreRestoreFromGoogleCloud(ServerStore serverStore, RestoreFromGoogleCloudConfiguration restoreFromConfiguration) : base(serverStore, restoreFromConfiguration)
         {
             _client = new RavenGoogleCloudClient(restoreFromConfiguration.Settings);
             _remoteFolderName = restoreFromConfiguration.Settings.RemoteFolderName;

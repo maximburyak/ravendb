@@ -34,25 +34,15 @@ namespace Raven.Server.ServerWide.Maintenance
     {
         private static readonly Logger Logger = LoggingSource.Instance.GetLogger<ServerStoreRestoreTaskBase>("ServerStore");
                 
-        protected readonly RestoreBackupConfigurationBase RestoreFromConfiguration;//protect for using in GetFilesForRestore()
-        private readonly string _nodeTag;
-        private readonly OperationCancelToken _operationCancelToken;
+        protected readonly ServerStoreRestoreBackupConfigurationBase RestoreFromConfiguration;//protect for using in GetFilesForRestore()                
         private bool _hasEncryptionKey;
-        private readonly bool _restoringToDefaultDataDirectory;
-        private readonly ServerStore _serverStore;
+        private readonly bool _restoringToDefaultDataDirectory;        
 
-        protected ServerStoreRestoreTaskBase(RestoreBackupConfigurationBase restoreFromConfiguration,
-            string nodeTag,
-            OperationCancelToken operationCancelToken, 
-            ServerStore serverStore)
+        //RavenConfiguration.CreateForServer(null, settingsPath)
+
+        protected ServerStoreRestoreTaskBase(ServerStoreRestoreBackupConfigurationBase restoreFromConfiguration)
         {            
             RestoreFromConfiguration = restoreFromConfiguration;
-            _nodeTag = nodeTag;
-            _operationCancelToken = operationCancelToken;
-            _serverStore = serverStore;
-            if (string.IsNullOrWhiteSpace(RestoreFromConfiguration.DatabaseName))
-                throw new ArgumentException("Database name can't be null or empty");
-                        
 
             _hasEncryptionKey = string.IsNullOrWhiteSpace(RestoreFromConfiguration.EncryptionKey) == false;
             if (_hasEncryptionKey)
@@ -62,16 +52,14 @@ namespace Raven.Server.ServerWide.Maintenance
                     throw new InvalidOperationException($"The size of the key must be 256 bits, but was {key.Length * 8} bits.");                                
             }
 
-            var hasRestoreDataDirectory = string.IsNullOrWhiteSpace(RestoreFromConfiguration.DataDirectory) == false;
-            if (hasRestoreDataDirectory &&
-                HasFilesOrDirectories(RestoreFromConfiguration.DataDirectory))
+            if (string.IsNullOrWhiteSpace(RestoreFromConfiguration.DataDirectory))
+            {
+                throw new ArgumentException("DataDirectory is a mandatory field of the ServerStore restore configuration");
+            }
+
+            if (HasFilesOrDirectories(RestoreFromConfiguration.DataDirectory))
                 throw new ArgumentException("New data directory must be empty of any files or folders, " +
                                             $"path: {RestoreFromConfiguration.DataDirectory}");
-
-            if (hasRestoreDataDirectory == false)
-                RestoreFromConfiguration.DataDirectory = GetDataDirectory();
-
-            _restoringToDefaultDataDirectory = IsDefaultDataDirectory(RestoreFromConfiguration.DataDirectory, RestoreFromConfiguration.DatabaseName);
         }
 
         protected abstract Task<Stream> GetStream(string path);
@@ -147,37 +135,8 @@ namespace Raven.Server.ServerWide.Maintenance
                 if (Logger.IsOperationsEnabled)
                     Logger.Operations("Failed to restore database", e);
 
-                var alert = AlertRaised.Create(
-                    RestoreFromConfiguration.DatabaseName,
-                    "Failed to restore database",
-                    $"Could not restore database named {RestoreFromConfiguration.DatabaseName}",
-                    AlertType.RestoreError,
-                    NotificationSeverity.Error,
-                    details: new ExceptionDetails(e));
-                _serverStore.NotificationCenter.Add(alert);
-
-                using (_serverStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
-                {
-                    bool databaseExists;
-                    using (context.OpenReadTransaction())
-                    {
-                        databaseExists = _serverStore.Cluster.DatabaseExists(context, RestoreFromConfiguration.DatabaseName);
-                    }
-
-                    if (databaseExists == false)
-                    {
-                        // delete any files that we already created during the restore
-                        IOExtensions.DeleteDirectory(RestoreFromConfiguration.DataDirectory);
-                    }
-                    else
-                    {
-                        var deleteResult = await _serverStore.DeleteDatabaseAsync(RestoreFromConfiguration.DatabaseName, 
-                            true, 
-                            new[] { _serverStore.NodeTag }, 
-                            RaftIdGenerator.DontCareId);
-                        await _serverStore.Cluster.WaitForIndexNotification(deleteResult.Index);
-                    }
-                }
+                // delete any files that we already created during the restore
+                IOExtensions.DeleteDirectory(RestoreFromConfiguration.DataDirectory);
 
                 result.AddError($"Error occurred during restore of ServerStore. Exception: {e.Message}");
                 onProgress.Invoke(result.Progress);
@@ -220,8 +179,7 @@ namespace Raven.Server.ServerWide.Maintenance
                             restoreResult.AddInfo(message);
                             restoreResult.SnapshotRestore.ReadCount++;
                             onProgress.Invoke(restoreResult.Progress);
-                        },
-                        cancellationToken: _operationCancelToken.Token);
+                        });
                 }
             }
 
@@ -231,33 +189,6 @@ namespace Raven.Server.ServerWide.Maintenance
             return restoreSettings;
         }
 
-        private bool IsDefaultDataDirectory(string dataDirectory, string databaseName)
-        {
-            var defaultDataDirectory = RavenConfiguration.GetDataDirectoryPath(
-                _serverStore.Configuration.Core,
-                databaseName,
-                ResourceType.Database);
-
-            return PlatformDetails.RunningOnPosix == false
-                ? string.Equals(defaultDataDirectory, dataDirectory, StringComparison.OrdinalIgnoreCase)
-                : string.Equals(defaultDataDirectory, dataDirectory, StringComparison.Ordinal);
-        }
-
-        private string GetDataDirectory()
-        {
-            var dataDirectory =
-                RavenConfiguration.GetDataDirectoryPath(
-                    _serverStore.Configuration.Core,
-                    RestoreFromConfiguration.DatabaseName,
-                    ResourceType.Database);
-
-            var i = 0;
-            while (HasFilesOrDirectories(dataDirectory))
-                dataDirectory += $"-{++i}";
-
-            return dataDirectory;
-        }
-
         protected bool HasFilesOrDirectories(string location)
         {
             if (Directory.Exists(location) == false)
@@ -265,11 +196,6 @@ namespace Raven.Server.ServerWide.Maintenance
 
             return Directory.GetFiles(location).Length > 0 ||
                    Directory.GetDirectories(location).Length > 0;
-        }
-
-        protected virtual void Dispose()
-        {
-            _operationCancelToken.Dispose();
         }
     }
 

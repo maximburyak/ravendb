@@ -7,6 +7,7 @@ using SlowTests.Issues;
 using SlowTests.Server;
 using SlowTests.Voron;
 using StressTests.Cluster;
+using Tests.Infrastructure;
 
 namespace Tryouts
 {
@@ -14,7 +15,11 @@ namespace Tryouts
     {
         public static async Task Main(string[] args)
         {
-            new ServerStoreBackup().Backup();
+            using var helper = new ConsoleTestOutputHelper();
+            using (var test = new ServerStoreBackup(helper))
+            {
+                await test.Backup();
+            }
         }
     }
 }

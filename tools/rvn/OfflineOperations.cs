@@ -1,9 +1,12 @@
 ﻿using System;
 using System.IO;
+using System.Threading;
 using Raven.Client.Documents.Operations.Backups;
 using Raven.Server.Config.Categories;
 using Raven.Server.ServerWide;
+using Raven.Server.ServerWide.Maintenance;
 using Raven.Server.Utils;
+using Sparrow.Json;
 using Sparrow.Json.Parsing;
 using Sparrow.Server;
 using Voron;
@@ -85,18 +88,82 @@ namespace rvn
             return "Decrypt: Completed Successfully";
         }
 
-        public static string RestorServerStore(RestoreBackupConfigurationBase srcDir)
+        public static string RestorServerStore(BlittableJsonReaderObject restoreConfiguration)
         {
-            DynamicJsonValue djv = srcDir.ToJson();
 
-            switch (srcDir.ToJson())
+            RestoreType restoreType;
+            if (restoreConfiguration.TryGet("Type", out string typeAsString))
             {
-
+                if (RestoreType.TryParse(typeAsString, out restoreType) == false)
+                    throw new ArgumentException($"{typeAsString} is unknown backup type.");
+            }
+            else
+            {
+                restoreType = RestoreType.Local;
             }
 
+            ServerStoreRestoreTaskBase restoreBackupTask;
+            string databaseName;            
+            switch (restoreType)
+            {
+                case RestoreType.Local:
+                    var localConfiguration = JsonDeserializationCluster.ServerStoreRestoreBackupConfiguration(restoreConfiguration);
+                    restoreBackupTask = new ServerStoreRestoreFromLocal(                        
+                        localConfiguration);
+                    databaseName = await ValidateFreeSpace(localConfiguration, context, restoreBackupTask);
+                    break;
+
+                case RestoreType.S3:
+                    var s3Configuration = JsonDeserializationCluster.RestoreS3BackupConfiguration(restoreConfiguration);
+                    restoreBackupTask = new ServerStoreRestoreFromS3(
+                        ServerStore,
+                        s3Configuration,
+                        ServerStore.NodeTag,
+                        cancelToken);
+                    databaseName = await ValidateFreeSpace(s3Configuration, context, restoreBackupTask);
+
+                    break;
+                case RestoreType.Azure:
+                    var azureConfiguration = JsonDeserializationCluster.RestoreAzureBackupConfiguration(restoreConfiguration);
+                    restoreBackupTask = new RestoreFromAzure(
+                        ServerStore,
+                        azureConfiguration,
+                        ServerStore.NodeTag,
+                        cancelToken);
+                    databaseName = await ValidateFreeSpace(azureConfiguration, context, restoreBackupTask);
+
+                    break;
+                case RestoreType.GoogleCloud:
+                    var googlCloudConfiguration = JsonDeserializationCluster.RestoreGoogleCloudBackupConfiguration(restoreConfiguration);
+                    restoreBackupTask = new RestoreFromGoogleCloud(
+                        ServerStore,
+                        googlCloudConfiguration,
+                        ServerStore.NodeTag,
+                        cancelToken);
+                    databaseName = await ValidateFreeSpace(googlCloudConfiguration, context, restoreBackupTask);
+
+                    break;
+
+                default:
+                    throw new InvalidOperationException($"No matching backup type was found for {restoreType}");
+            }
+
+            var t = ServerStore.Operations.AddOperation(
+                null,
+                $"Database restore: {databaseName}",
+                Documents.Operations.Operations.OperationType.DatabaseRestore,
+                taskFactory: onProgress => Task.Run(async () => await restoreBackupTask.Execute(onProgress), cancelToken.Token),
+                id: operationId, token: cancelToken);
+
+            using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
+            {
+                writer.WriteOperationIdAndNodeTag(context, operationId, ServerStore.NodeTag);
+            }
+            
 
 
-            return "Decrypt: Completed Successfully";
+
+            return "ServerStore restore: Completed Successfully";
         }
 
         public static string Trust(string key, string tag)

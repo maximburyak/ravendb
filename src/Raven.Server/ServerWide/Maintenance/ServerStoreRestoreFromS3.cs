@@ -15,7 +15,7 @@ namespace Raven.Server.ServerWide.Maintenance
         private readonly RavenAwsS3Client _client;
         private readonly string _remoteFolderName;
 
-        public ServerStoreRestoreFromS3(ServerStore serverStore, RestoreFromS3Configuration restoreFromConfiguration, string nodeTag, OperationCancelToken operationCancelToken) : base(serverStore, restoreFromConfiguration, nodeTag, operationCancelToken)
+        public ServerStoreRestoreFromS3(ServerStoreRestoreFromS3Configuration restoreFromConfiguration) : base(restoreFromConfiguration)
         {
             _client = new RavenAwsS3Client(restoreFromConfiguration.Settings);
             _remoteFolderName = restoreFromConfiguration.Settings.RemoteFolderName;

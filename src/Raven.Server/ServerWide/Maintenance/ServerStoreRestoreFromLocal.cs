@@ -13,7 +13,7 @@ namespace Raven.Server.ServerWide.Maintenance
     {
         private readonly string _backupLocation;
 
-        public ServerStoreRestoreFromLocal(ServerStore serverStore, RestoreBackupConfiguration restoreConfiguration, string nodeTag, OperationCancelToken operationCancelToken) : base(serverStore, restoreConfiguration, nodeTag, operationCancelToken)
+        public ServerStoreRestoreFromLocal(ServerStoreRestoreBackupConfiguration restoreConfiguration) : base(restoreConfiguration)
         {
             if (string.IsNullOrWhiteSpace(restoreConfiguration.BackupLocation))
                 throw new ArgumentException("Backup location can't be null or empty");

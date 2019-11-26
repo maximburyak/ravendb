@@ -23,6 +23,7 @@ using Raven.Server.ServerWide.Commands.Monitoring.Snmp;
 using Raven.Server.ServerWide.Commands.PeriodicBackup;
 using Raven.Server.ServerWide.Commands.Sorters;
 using Raven.Server.ServerWide.Commands.Subscriptions;
+using Raven.Server.ServerWide.Maintenance;
 using Sparrow.Json;
 
 namespace Raven.Server.ServerWide
@@ -70,6 +71,14 @@ namespace Raven.Server.ServerWide
         public static readonly Func<BlittableJsonReaderObject, RestoreFromAzureConfiguration> RestoreAzureBackupConfiguration = GenerateJsonDeserializationRoutine<RestoreFromAzureConfiguration>();
        
         public static readonly Func<BlittableJsonReaderObject, RestoreFromGoogleCloudConfiguration> RestoreGoogleCloudBackupConfiguration = GenerateJsonDeserializationRoutine<RestoreFromGoogleCloudConfiguration>();
+
+        public static readonly Func<BlittableJsonReaderObject, ServerStoreRestoreBackupConfiguration> ServerStoreRestoreBackupConfiguration = GenerateJsonDeserializationRoutine<ServerStoreRestoreBackupConfiguration>();
+
+        public static readonly Func<BlittableJsonReaderObject, ServerStoreRestoreFromS3Configuration> ServerStoreRestoreS3BackupConfiguration = GenerateJsonDeserializationRoutine<ServerStoreRestoreFromS3Configuration>();
+
+        public static readonly Func<BlittableJsonReaderObject, ServerStoreRestoreFromAzureConfiguration> ServerStoreRestoreAzureBackupConfiguration = GenerateJsonDeserializationRoutine<ServerStoreRestoreFromAzureConfiguration>();
+
+        public static readonly Func<BlittableJsonReaderObject, ServerStoreRestoreFromGoogleCloudConfiguration> ServerStoreRestoreGoogleCloudBackupConfiguration = GenerateJsonDeserializationRoutine<ServerStoreRestoreFromGoogleCloudConfiguration>();
 
         public static readonly Func<BlittableJsonReaderObject, RevisionsConfiguration> RevisionsConfiguration = GenerateJsonDeserializationRoutine<RevisionsConfiguration>();
 
