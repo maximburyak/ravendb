@@ -15,6 +15,8 @@ namespace Raven.Server.ServerWide.Maintenance
 
         public bool SkipIndexes { get; set; }
 
+        public string LastFileNameToRestore { get; set; }
+
         protected abstract RestoreType Type { get; }
 
         public BackupEncryptionSettings BackupEncryptionSettings { get; set; }

@@ -14,6 +14,7 @@ using Raven.Client.ServerWide;
 using Raven.Client.ServerWide.Operations;
 using Raven.Client.Util;
 using Raven.Server.Config;
+using Raven.Server.Config.Settings;
 using Raven.Server.Documents.PeriodicBackup;
 using Raven.Server.Documents.PeriodicBackup.Restore;
 using Raven.Server.NotificationCenter.Notifications;
@@ -23,8 +24,10 @@ using Raven.Server.ServerWide.Context;
 using Raven.Server.Smuggler.Documents;
 using Raven.Server.Smuggler.Documents.Data;
 using Raven.Server.Utils;
+using Sparrow;
 using Sparrow.Logging;
 using Sparrow.Platform;
+using Sparrow.Server.Utils;
 using Voron.Impl.Backup;
 using Voron.Util.Settings;
 
@@ -63,15 +66,11 @@ namespace Raven.Server.ServerWide.Maintenance
         }
 
         protected abstract Task<Stream> GetStream(string path);
-
         protected abstract Task<ZipArchive> GetZipArchiveForSnapshot(string path);
         protected abstract Task<ZipArchive> GetZipArchiveForSnapshotCalc(string path);
-
         protected abstract Task<List<string>> GetFilesForRestore();
-
         protected abstract string GetBackupPath(string smugglerFile);
         protected abstract string GetSmugglerBackupPath(string smugglerFile);
-
         protected abstract string GetBackupLocation();
 
         public async Task<IOperationResult> Execute(Action<IOperationProgress> onProgress)
@@ -83,7 +82,7 @@ namespace Raven.Server.ServerWide.Maintenance
 
             try
             {
-                var fileToRestore = (await GetFilesForRestore()).FirstOrDefault();
+                var fileToRestore = (await GetOrderedFilesToRestore()).FirstOrDefault();
 
                 if (fileToRestore == null || fileToRestore.Length == 0)
                 {
@@ -111,7 +110,6 @@ namespace Raven.Server.ServerWide.Maintenance
                 result.SnapshotRestore.Processed = true;
                 result.AddInfo($"Successfully restored {result.SnapshotRestore.ReadCount} files during snapshot restore, took: {sw.ElapsedMilliseconds:#,#;;0}ms");
                 onProgress.Invoke(result.Progress);
-                    
 
                 result.DatabaseRecord.Processed = true;
                 result.Documents.Processed = true;
@@ -124,11 +122,9 @@ namespace Raven.Server.ServerWide.Maintenance
                 result.Subscriptions.Processed = true;
                 onProgress.Invoke(result.Progress);
                     
-                    
                 // todo: set node to promotable, we'll probably need to load the serverstore in order to modify this value, or set some flag to settings.json
 
                 return result;
-                
             }
             catch (Exception e)
             {
@@ -141,12 +137,89 @@ namespace Raven.Server.ServerWide.Maintenance
                 result.AddError($"Error occurred during restore of ServerStore. Exception: {e.Message}");
                 onProgress.Invoke(result.Progress);
                 throw;
-            }
-            finally
-            {
-                Dispose();
-            }
+            }            
         }
+
+        private async Task<List<string>> GetOrderedFilesToRestore()
+        {
+            var files = await GetFilesForRestore();
+
+            var orderedFiles = files
+                .Where(RestorePointsBase.IsBackupOrSnapshot)
+                .OrderBackups();
+
+            if (orderedFiles == null)
+                throw new ArgumentException("No files to restore from the backup location, " +
+                                            $"path: {GetBackupLocation()}");
+
+            if (string.IsNullOrWhiteSpace(RestoreFromConfiguration.LastFileNameToRestore))
+                return orderedFiles.ToList();
+
+            var filesToRestore = new List<string>();
+
+            foreach (var file in orderedFiles)
+            {
+                filesToRestore.Add(file);
+                if (file.Equals(RestoreFromConfiguration.LastFileNameToRestore, StringComparison.OrdinalIgnoreCase))
+                    break;
+            }
+
+            return filesToRestore;
+        }
+
+        public async Task<long> CalculateBackupSizeInBytes()
+        {
+            var zipPath = GetBackupLocation();
+            zipPath = Path.Combine(zipPath, RestoreFromConfiguration.LastFileNameToRestore);
+            using (var zip = await GetZipArchiveForSnapshotCalc(zipPath))
+                return zip.Entries.Sum(entry => entry.Length);
+        }
+
+        private async Task ValidateFreeSpace()
+        {
+            long backupSizeInBytes;
+
+            try
+            {
+                backupSizeInBytes = await CalculateBackupSizeInBytes();
+            }
+            catch (Exception e)
+            {
+                if (e is InvalidDataException)
+                {
+                    if (Logger.IsOperationsEnabled)
+                        Logger.Operations($"Restore database from snapshot operation failed. Invalid snapshot file {RestoreFromConfiguration.LastFileNameToRestore}", e);
+                    throw new InvalidDataException($"Invalid snapshot file {RestoreFromConfiguration.LastFileNameToRestore} ", e);
+                }
+
+                if (e is FileNotFoundException)
+                {
+                    if (Logger.IsOperationsEnabled)
+                        Logger.Operations($"Restore database from snapshot operation failed. Could not find file {RestoreFromConfiguration.LastFileNameToRestore}", e);
+                    throw new FileNotFoundException($"Could not find file {RestoreFromConfiguration.LastFileNameToRestore} ", e);
+                }
+
+                if (Logger.IsOperationsEnabled)
+                    Logger.Operations($"Restore database from snapshot operation failed. Error reading snapshot file {RestoreFromConfiguration.LastFileNameToRestore}", e);
+
+                throw new IOException($"Error reading snapshot file {RestoreFromConfiguration.LastFileNameToRestore}. Please provide a valid snapshot file.", e);
+            }
+
+            var destinationPath = RestoreFromConfiguration.DataDirectory;
+
+            var drivesInfo = PlatformDetails.RunningOnPosix ? DriveInfo.GetDrives() : null;
+            var destinationDirInfo = DiskSpaceChecker.GetDriveInfo(destinationPath, drivesInfo, out _);
+            var destinationDriveInfo = DiskSpaceChecker.GetDiskSpaceInfo(destinationDirInfo.DriveName);
+
+            if (destinationDriveInfo == null)
+                throw new ArgumentException($"Provided path starts with an invalid drive name. Please use a proper path. Drive name provided: {destinationDirInfo.DriveName}.");
+
+            var desiredFreeSpace = Sparrow.Size.Min(new Sparrow.Size(512, SizeUnit.Megabytes), destinationDriveInfo.TotalSize * 0.01) + new Sparrow.Size(backupSizeInBytes, SizeUnit.Bytes);
+
+            if (destinationDriveInfo.TotalFreeSpace < desiredFreeSpace)
+                throw new ArgumentException($"No enough free space to restore a backup. Required space {desiredFreeSpace}, available space: {destinationDriveInfo.TotalFreeSpace}");
+        }
+
 
         protected async Task<RestoreSettings> SnapshotRestore(string backupPath,
             Action<IOperationProgress> onProgress, RestoreResult restoreResult)
