@@ -1,7 +1,10 @@
 ﻿using System;
 using System.IO;
 using System.Threading;
+using System.Threading.Tasks;
+using Raven.Client.Documents.Operations;
 using Raven.Client.Documents.Operations.Backups;
+using Raven.Client.Util;
 using Raven.Server.Config.Categories;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Maintenance;
@@ -94,7 +97,7 @@ namespace rvn
             RestoreType restoreType;
             if (restoreConfiguration.TryGet("Type", out string typeAsString))
             {
-                if (RestoreType.TryParse(typeAsString, out restoreType) == false)
+                if (Enum.TryParse(typeAsString, out restoreType) == false)
                     throw new ArgumentException($"{typeAsString} is unknown backup type.");
             }
             else
@@ -103,65 +106,38 @@ namespace rvn
             }
 
             ServerStoreRestoreTaskBase restoreBackupTask;
-            string databaseName;            
             switch (restoreType)
             {
                 case RestoreType.Local:
                     var localConfiguration = JsonDeserializationCluster.ServerStoreRestoreBackupConfiguration(restoreConfiguration);
-                    restoreBackupTask = new ServerStoreRestoreFromLocal(                        
-                        localConfiguration);
-                    databaseName = await ValidateFreeSpace(localConfiguration, context, restoreBackupTask);
+                    restoreBackupTask = new ServerStoreRestoreFromLocal(localConfiguration);                    
                     break;
 
                 case RestoreType.S3:
-                    var s3Configuration = JsonDeserializationCluster.RestoreS3BackupConfiguration(restoreConfiguration);
-                    restoreBackupTask = new ServerStoreRestoreFromS3(
-                        ServerStore,
-                        s3Configuration,
-                        ServerStore.NodeTag,
-                        cancelToken);
-                    databaseName = await ValidateFreeSpace(s3Configuration, context, restoreBackupTask);
+                    var s3Configuration = JsonDeserializationCluster.ServerStoreRestoreS3BackupConfiguration(restoreConfiguration);
+                    restoreBackupTask = new ServerStoreRestoreFromS3(s3Configuration);                    
 
                     break;
                 case RestoreType.Azure:
-                    var azureConfiguration = JsonDeserializationCluster.RestoreAzureBackupConfiguration(restoreConfiguration);
-                    restoreBackupTask = new RestoreFromAzure(
-                        ServerStore,
-                        azureConfiguration,
-                        ServerStore.NodeTag,
-                        cancelToken);
-                    databaseName = await ValidateFreeSpace(azureConfiguration, context, restoreBackupTask);
-
+                    var azureConfiguration = JsonDeserializationCluster.ServerStoreRestoreAzureBackupConfiguration(restoreConfiguration);
+                    restoreBackupTask = new ServerStoreRestoreFromAzure(azureConfiguration);
                     break;
                 case RestoreType.GoogleCloud:
-                    var googlCloudConfiguration = JsonDeserializationCluster.RestoreGoogleCloudBackupConfiguration(restoreConfiguration);
-                    restoreBackupTask = new RestoreFromGoogleCloud(
-                        ServerStore,
-                        googlCloudConfiguration,
-                        ServerStore.NodeTag,
-                        cancelToken);
-                    databaseName = await ValidateFreeSpace(googlCloudConfiguration, context, restoreBackupTask);
-
+                    var googlCloudConfiguration = JsonDeserializationCluster.ServerStoreRestoreGoogleCloudBackupConfiguration(restoreConfiguration);
+                    restoreBackupTask = new ServerStoreRestoreFromGoogleCloud(googlCloudConfiguration);
                     break;
-
                 default:
                     throw new InvalidOperationException($"No matching backup type was found for {restoreType}");
             }
 
-            var t = ServerStore.Operations.AddOperation(
-                null,
-                $"Database restore: {databaseName}",
-                Documents.Operations.Operations.OperationType.DatabaseRestore,
-                taskFactory: onProgress => Task.Run(async () => await restoreBackupTask.Execute(onProgress), cancelToken.Token),
-                id: operationId, token: cancelToken);
-
-            using (var writer = new BlittableJsonTextWriter(context, ResponseBodyStream()))
+            AsyncHelpers.RunSync(()=>restoreBackupTask.Execute(x =>
             {
-                writer.WriteOperationIdAndNodeTag(context, operationId, ServerStore.NodeTag);
-            }
-            
-
-
+                using (var context = JsonOperationContext.ShortTermSingleUse())
+                {
+                    Console.WriteLine(context.ReadObject(x.ToJson(), "ServerStore import").ToString());
+               
+                }
+            }));
 
             return "ServerStore restore: Completed Successfully";
         }

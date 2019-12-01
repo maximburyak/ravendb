@@ -137,7 +137,11 @@ namespace Raven.Server.ServerWide.Maintenance
                 result.AddError($"Error occurred during restore of ServerStore. Exception: {e.Message}");
                 onProgress.Invoke(result.Progress);
                 throw;
-            }            
+            }
+            finally
+            {
+                Dispose();
+            }
         }
 
         private async Task<List<string>> GetOrderedFilesToRestore()
@@ -221,45 +225,35 @@ namespace Raven.Server.ServerWide.Maintenance
         }
 
 
-        protected async Task<RestoreSettings> SnapshotRestore(string backupPath,
+        protected async Task SnapshotRestore(string backupPath,
             Action<IOperationProgress> onProgress, RestoreResult restoreResult)
         {
             Debug.Assert(onProgress != null);
 
-            RestoreSettings restoreSettings = null;
-
             var fullBackupPath = GetBackupPath(backupPath);
             using (var zip = await GetZipArchiveForSnapshot(fullBackupPath))
             {
-                foreach (var zipEntries in zip.Entries.GroupBy(x => x.FullName.Substring(0, x.FullName.Length - x.Name.Length)))
+                var grouptedEntries = zip.Entries.GroupBy(x => x.FullName.Substring(0, x.FullName.Length - x.Name.Length)).ToArray();
+
+                if (grouptedEntries.Length != 1)
                 {
-                    var directory = zipEntries.Key;
-
-                    if (string.IsNullOrWhiteSpace(directory))
-                    {
-                        continue;
-                    }
-
-                    var voronDataDirectory = new VoronPathSetting(RestoreFromConfiguration.DataDirectory);
-                    var restoreDirectory = voronDataDirectory.Combine(directory);
-
-                    BackupMethods.Full.Restore(
-                        zipEntries,
-                        restoreDirectory,
-                        journalDir: null,
-                        onProgress: message =>
-                        {
-                            restoreResult.AddInfo(message);
-                            restoreResult.SnapshotRestore.ReadCount++;
-                            onProgress.Invoke(restoreResult.Progress);
-                        });
+                    throw new ArgumentOutOfRangeException($"Number of entries in ServerStore backup archive must 1, instead it was {zip.Entries.Count}");
                 }
+
+                var voronDataDirectory = new VoronPathSetting(RestoreFromConfiguration.DataDirectory);
+                var restoreDirectory = voronDataDirectory.Combine("System");
+
+                BackupMethods.Full.Restore(
+                    grouptedEntries[0],
+                    restoreDirectory,
+                    journalDir: null,
+                    onProgress: message =>
+                    {
+                        restoreResult.AddInfo(message);
+                        restoreResult.SnapshotRestore.ReadCount++;
+                        onProgress.Invoke(restoreResult.Progress);
+                    });
             }
-
-            if (restoreSettings == null)
-                throw new InvalidDataException("Cannot restore the snapshot without the settings file!");
-
-            return restoreSettings;
         }
 
         protected bool HasFilesOrDirectories(string location)
@@ -269,6 +263,10 @@ namespace Raven.Server.ServerWide.Maintenance
 
             return Directory.GetFiles(location).Length > 0 ||
                    Directory.GetDirectories(location).Length > 0;
+        }
+
+        protected virtual void Dispose()
+        {            
         }
     }
 
